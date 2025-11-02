@@ -5,6 +5,7 @@ import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okhttp3.Request // Thêm import này
 import org.json.JSONArray
 import org.json.JSONObject
 import org.dokiteam.doki.parsers.MangaLoaderContext
@@ -257,7 +258,7 @@ internal class MimiHentai(context: MangaLoaderContext) :
 			)
 		}
 
-		val urlChaps = "https://$domain/$apiSuffix/gallery/$id"
+		val urlChaps = "https://example.com/$apiSuffix/gallery/$id"
 		val parsedChapters = webClient.httpGet(urlChaps).parseJsonArray()
 		val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS", Locale.US)
 		val chapters = parsedChapters.mapJSON { jo ->
@@ -345,19 +346,17 @@ internal class MimiHentai(context: MangaLoaderContext) :
 		// 2. Tạo RequestBody
 		val requestBody = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType())
 
-		// 3. Xây dựng request POST mới đến proxy
-		val proxyRequest = request.newBuilder()
+		// 3. [SỬA LỖI] Xây dựng một request HOÀN TOÀN MỚI
+		// Không dùng request.newBuilder() để tránh kế thừa các header "lạ" (như Referer)
+		// mà proxy không mong muốn.
+		val proxyRequest = Request.Builder()
 			.url(proxyEndpoint)
 			.post(requestBody)
-			.header("Content-Type", "application/json")
-			// [SỬA LỖI]
-			// Giữ lại User-Agent gốc, nếu không có thì dùng UserAgents.KOTATSU làm fallback
-			// vì 'userAgent' property không tồn tại (đã bị remove trong onCreateConfig).
-			.header("User-Agent", request.header("User-Agent") ?: UserAgents.KOTATSU)
+			// Chỉ thêm header này, y hệt như lệnh cURL đã thành công
+			.header("Content-Type", "application/json; charset=utf-8")
 			.build()
 
 		// 4. Thực thi request đến proxy và trả về kết quả
-		// Phản hồi này đã là dữ liệu ảnh đã được giải mã
 		return chain.proceed(proxyRequest)
 	}
 
