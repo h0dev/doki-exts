@@ -1,6 +1,6 @@
 package org.dokiteam.doki.parsers.site.vi
 
-import kotlinx.coroutines.runBlocking // Bị xóa vì không còn dùng trong intercept
+// import kotlinx.coroutines.runBlocking // Bị xóa
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -9,8 +9,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.dokiteam.doki.parsers.MangaLoaderContext
 import org.dokiteam.doki.parsers.MangaSourceParser
-import org.dokiteam.doki.parsers.bitmap.Bitmap // Bị xóa
-import org.dokiteam.doki.parsers.bitmap.Rect // Bị xóa
+// import org.dokiteam.doki.parsers.bitmap.Bitmap // Bị xóa
+// import org.dokiteam.doki.parsers.bitmap.Rect // Bị xóa
 import org.dokiteam.doki.parsers.config.ConfigKey
 import org.dokiteam.doki.parsers.core.PagedMangaParser
 import org.dokiteam.doki.parsers.network.UserAgents
@@ -19,7 +19,7 @@ import org.dokiteam.doki.parsers.util.*
 import org.dokiteam.doki.parsers.util.json.*
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.PI // Bị xóa
+// import kotlin.math.PI // Bị xóa
 
 @MangaSourceParser("MIMIHENTAI", "MimiHentai", "vi", type = ContentType.HENTAI)
 internal class MimiHentai(context: MangaLoaderContext) :
@@ -28,8 +28,6 @@ internal class MimiHentai(context: MangaLoaderContext) :
 	private val apiSuffix = "api/v2/manga"
 	override val configKeyDomain = ConfigKey.Domain("mimihentai.com", "hentaihvn.com")
 	override val userAgentKey = ConfigKey.UserAgent(UserAgents.KOTATSU)
-
-	// Giữ nguyên phần còn lại của file từ đây...
 
 	override suspend fun getFavicons(): Favicons {
 		return Favicons(
@@ -316,7 +314,6 @@ internal class MimiHentai(context: MangaLoaderContext) :
 		val url = request.url
 
 		val pathSegments = url.pathSegments
-		// Sửa lỗi typo: DRM_MARKTER -> DRM_MARKER
 		val markerIndex = pathSegments.indexOf(DRM_MARKER)
 
 		if (markerIndex == -1 || markerIndex + 1 >= pathSegments.size) {
@@ -353,27 +350,16 @@ internal class MimiHentai(context: MangaLoaderContext) :
 			.url(proxyEndpoint)
 			.post(requestBody)
 			.header("Content-Type", "application/json")
-			// Giữ lại User-Agent gốc phòng trường hợp proxy cần
-			.header("User-Agent", request.header("User-Agent") ?: userAgent)
+			// [SỬA LỖI]
+			// Giữ lại User-Agent gốc, nếu không có thì dùng UserAgents.KOTATSU làm fallback
+			// vì 'userAgent' property không tồn tại (đã bị remove trong onCreateConfig).
+			.header("User-Agent", request.header("User-Agent") ?: UserAgents.KOTATSU)
 			.build()
 
 		// 4. Thực thi request đến proxy và trả về kết quả
 		// Phản hồi này đã là dữ liệu ảnh đã được giải mã
 		return chain.proceed(proxyRequest)
-
-		// --- LOGIC CŨ (đã bị xóa) ---
-		// val newRequest = request.newBuilder().url(originalUrl).build()
-		// val response = chain.proceed(newRequest)
-		//
-		// return context.redrawImageResponse(response) { bitmap ->
-		// 	runBlocking {
-		// 		extractMetadata(bitmap, gt)
-		// 	}
-		// }
 	}
-
-	// [ĐÃ XÓA] Toàn bộ các hàm private extractMetadata, decodeGt, getKeyByStrategy, 
-	// getFixedEncryptionKey, hexToBytes đã được xóa vì không còn sử dụng.
 
 	private suspend fun fetchTags(): Set<MangaTag> {
 		val url = "https://$domain/$apiSuffix/genres"
