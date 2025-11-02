@@ -1,14 +1,16 @@
 package org.dokiteam.doki.parsers.site.vi
 
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.runBlocking // Bị xóa vì không còn dùng trong intercept
 import okhttp3.Interceptor
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import org.dokiteam.doki.parsers.MangaLoaderContext
 import org.dokiteam.doki.parsers.MangaSourceParser
-import org.dokiteam.doki.parsers.bitmap.Bitmap
-import org.dokiteam.doki.parsers.bitmap.Rect
+import org.dokiteam.doki.parsers.bitmap.Bitmap // Bị xóa
+import org.dokiteam.doki.parsers.bitmap.Rect // Bị xóa
 import org.dokiteam.doki.parsers.config.ConfigKey
 import org.dokiteam.doki.parsers.core.PagedMangaParser
 import org.dokiteam.doki.parsers.network.UserAgents
@@ -17,7 +19,7 @@ import org.dokiteam.doki.parsers.util.*
 import org.dokiteam.doki.parsers.util.json.*
 import java.text.SimpleDateFormat
 import java.util.*
-import kotlin.math.PI
+import kotlin.math.PI // Bị xóa
 
 @MangaSourceParser("MIMIHENTAI", "MimiHentai", "vi", type = ContentType.HENTAI)
 internal class MimiHentai(context: MangaLoaderContext) :
@@ -26,6 +28,8 @@ internal class MimiHentai(context: MangaLoaderContext) :
 	private val apiSuffix = "api/v2/manga"
 	override val configKeyDomain = ConfigKey.Domain("mimihentai.com", "hentaihvn.com")
 	override val userAgentKey = ConfigKey.UserAgent(UserAgents.KOTATSU)
+
+	// Giữ nguyên phần còn lại của file từ đây...
 
 	override suspend fun getFavicons(): Favicons {
 		return Favicons(
@@ -285,6 +289,7 @@ internal class MimiHentai(context: MangaLoaderContext) :
 			val imageUrl = jo.getString("imageUrl")
 			val gt = jo.getStringOrNull("drm")
 			
+			// Vẫn tạo URL "giả" chứa marker. Hàm intercept sẽ bắt URL này.
 			val finalUrl = if (gt != null) {
 				"$imageUrl/$DRM_MARKER/$gt"
 			} else {
@@ -300,173 +305,75 @@ internal class MimiHentai(context: MangaLoaderContext) :
 		}
 	}
 
+	/**
+	 * [CHỈNH SỬA]
+	 * Intercept các request ảnh.
+	 * Nếu URL chứa DRM_MARKER, thay vì tải ảnh gốc và giải mã,
+	 * chúng ta gọi đến proxy descrambler API.
+	 */
 	override fun intercept(chain: Interceptor.Chain): Response {
 		val request = chain.request()
 		val url = request.url
 
 		val pathSegments = url.pathSegments
+		// Sửa lỗi typo: DRM_MARKTER -> DRM_MARKER
 		val markerIndex = pathSegments.indexOf(DRM_MARKER)
 
 		if (markerIndex == -1 || markerIndex + 1 >= pathSegments.size) {
+			// Không phải ảnh DRM, cho request đi tiếp
 			return chain.proceed(request)
 		}
 		
+		// Trích xuất drmString (gt)
 		val gt = pathSegments[markerIndex + 1]
 
+		// Trích xuất URL ảnh gốc
 		val originalUrl = url.newBuilder().apply {
-			removePathSegment(pathSegments.size - 1)
-			removePathSegment(pathSegments.size - 2)
+			removePathSegment(pathSegments.size - 1) // Xóa gt
+			removePathSegment(pathSegments.size - 2) // Xóa DRM_MARKER
 		}.build()
 
-		val newRequest = request.newBuilder().url(originalUrl).build()
-		val response = chain.proceed(newRequest)
+		// --- LOGIC MỚI: Gọi proxy ---
 
-		return context.redrawImageResponse(response) { bitmap ->
-			runBlocking {
-				extractMetadata(bitmap, gt)
-			}
+		val proxyEndpoint = "https://mdimg.hdev.it.eu.org/descramble"
+		
+		// 1. Tạo JSON body cho proxy
+		val jsonBody = """
+		{
+		  "imageUrl": "${originalUrl.toString()}",
+		  "drmString": "$gt"
 		}
+		""".trimIndent()
+
+		// 2. Tạo RequestBody
+		val requestBody = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaType())
+
+		// 3. Xây dựng request POST mới đến proxy
+		val proxyRequest = request.newBuilder()
+			.url(proxyEndpoint)
+			.post(requestBody)
+			.header("Content-Type", "application/json")
+			// Giữ lại User-Agent gốc phòng trường hợp proxy cần
+			.header("User-Agent", request.header("User-Agent") ?: userAgent)
+			.build()
+
+		// 4. Thực thi request đến proxy và trả về kết quả
+		// Phản hồi này đã là dữ liệu ảnh đã được giải mã
+		return chain.proceed(proxyRequest)
+
+		// --- LOGIC CŨ (đã bị xóa) ---
+		// val newRequest = request.newBuilder().url(originalUrl).build()
+		// val response = chain.proceed(newRequest)
+		//
+		// return context.redrawImageResponse(response) { bitmap ->
+		// 	runBlocking {
+		// 		extractMetadata(bitmap, gt)
+		// 	}
+		// }
 	}
 
-	private fun extractMetadata(bitmap: Bitmap, ori: String): Bitmap {
-		val gt = decodeGt(ori)
-		val metadata = JSONObject()
-		var sw = 0
-		var sh = 0
-		val posJsonBuilder = JSONObject()
-		val dimsJsonBuilder = JSONObject()
-
-		for (t in gt.split("|")) {
-			when {
-				t.startsWith("sw:") -> sw = t.substring(3).toIntOrNull() ?: 0
-				t.startsWith("sh:") -> sh = t.substring(3).toIntOrNull() ?: 0
-				t.contains("@") && t.contains(">") -> {
-					val mainParts = t.split(">")
-					if (mainParts.size == 2) {
-						val left = mainParts[0]
-						val right = mainParts[1]
-						val leftParts = left.split("@")
-						if (leftParts.size == 2) {
-							val n = leftParts[0]
-							val rectStr = leftParts[1]
-							val rectValues = rectStr.split(",").mapNotNull { it.toIntOrNull() }
-							if (rectValues.size == 4) {
-								val (x, y, w, h) = rectValues
-								dimsJsonBuilder.put(n, JSONObject().apply {
-									put("x", x)
-									put("y", y)
-									put("width", w)
-									put("height", h)
-								})
-								posJsonBuilder.put(n, right)
-							}
-						}
-					}
-				}
-			}
-		}
-		metadata.put("sw", sw)
-		metadata.put("sh", sh)
-		metadata.put("dims", dimsJsonBuilder)
-		metadata.put("pos", posJsonBuilder)
-
-		if (sw <= 0 || sh <= 0) return bitmap
-
-		val fullW = bitmap.width
-		val fullH = bitmap.height
-
-		val working = context.createBitmap(sw, sh).also { k ->
-			k.drawBitmap(bitmap, Rect(0, 0, sw, sh), Rect(0, 0, sw, sh))
-		}
-
-		val keys = arrayOf("00","01","02","10","11","12","20","21","22")
-		val baseW = sw / 3
-		val baseH = sh / 3
-		val rw = sw % 3
-		val rh = sh % 3
-		val defaultDims = HashMap<String, IntArray>().apply {
-			for (k in keys) {
-				val i = k[0].digitToInt()
-				val j = k[1].digitToInt()
-				val w = baseW + if (j == 2) rw else 0
-				val h = baseH + if (i == 2) rh else 0
-				put(k, intArrayOf(j * baseW, i * baseH, w, h))
-			}
-		}
-
-		val dimsJson = metadata.optJSONObject("dims") ?: JSONObject()
-		val dims = HashMap<String, IntArray>().apply {
-			for (k in keys) {
-				val jo = dimsJson.optJSONObject(k)
-				if (jo != null) {
-					put(k, intArrayOf(
-						jo.getInt("x"),
-						jo.getInt("y"),
-						jo.getInt("width"),
-						jo.getInt("height"),
-					))
-				} else {
-					put(k, defaultDims.getValue(k))
-				}
-			}
-		}
-
-		val posJson = metadata.optJSONObject("pos") ?: JSONObject()
-		val inv = HashMap<String, String>().apply {
-			val it = posJson.keys()
-			while (it.hasNext()) {
-				val a = it.next()
-				val b = posJson.getString(a)
-				put(b, a)
-			}
-		}
-
-		val result = context.createBitmap(fullW, fullH)
-
-		for (k in keys) {
-			val srcKey = inv[k] ?: continue
-			val s = dims.getValue(srcKey)
-			val d = dims.getValue(k)
-			result.drawBitmap(
-				working,
-				Rect(s[0], s[1], s[0] + s[2], s[1] + s[3]),
-				Rect(d[0], d[1], d[0] + d[2], d[1] + d[3]),
-			)
-		}
-
-		if (sh < fullH) {
-			result.drawBitmap(
-				bitmap,
-				Rect(0, sh, fullW, fullH),
-				Rect(0, sh, fullW, fullH),
-			)
-		}
-		if (sw < fullW) {
-			result.drawBitmap(
-				bitmap,
-				Rect(sw, 0, fullW, sh),
-				Rect(sw, 0, fullW, sh),
-			)
-		}
-
-		return result
-	}
-
-	private fun decodeGt(hexData: String): String {
-		// Sửa lỗi nghiêm trọng: Đọc strategy từ hệ 16 thay vì hệ 10
-		val strategy = hexData.takeLast(2).toIntOrNull(16) ?: 0
-		val encryptionKey = getFixedEncryptionKey(strategy)
-		val encryptedHex = hexData.dropLast(2)
-		val encryptedBytes = hexToBytes(encryptedHex)
-		val keyBytes = encryptionKey.toByteArray(Charsets.UTF_8)
-		val decrypted = ByteArray(encryptedBytes.size)
-
-		for (i in encryptedBytes.indices) {
-			decrypted[i] = (encryptedBytes[i].toInt() xor keyBytes[i % keyBytes.size].toInt()).toByte()
-		}
-
-		return decrypted.toString(Charsets.UTF_8)
-	}
+	// [ĐÃ XÓA] Toàn bộ các hàm private extractMetadata, decodeGt, getKeyByStrategy, 
+	// getFixedEncryptionKey, hexToBytes đã được xóa vì không còn sử dụng.
 
 	private suspend fun fetchTags(): Set<MangaTag> {
 		val url = "https://$domain/$apiSuffix/genres"
@@ -477,74 +384,6 @@ internal class MimiHentai(context: MangaLoaderContext) :
 				key = jo.getLong("id").toString(),
 				source = source,
 			)
-		}
-	}
-
-	private fun getKeyByStrategy(strategy: Int): Double {
-		return when (strategy) {
-			0 -> 1.23872913102938
-			1 -> 1.28767913123448
-			2 -> 1.391378192300391
-			3 -> 2.391378192500391
-			4 -> 3.391378191230391
-			5 -> 4.391373210965091
-			6 -> 2.847291847392847
-			7 -> 5.192847362847291
-			8 -> 3.947382917483921
-			9 -> 1.847392847291847
-			10 -> 6.293847291847382
-			11 -> 4.847291847392847
-			12 -> 2.394827394827394
-			13 -> 7.847291847392847
-			14 -> 3.827394827394827
-			15 -> 1.947382947382947
-			16 -> 8.293847291847382
-			17 -> 5.847291847392847
-			18 -> 2.738472938472938
-			19 -> 9.847291847392847
-			20 -> 4.293847291847382
-			21 -> 6.847291847392847
-			22 -> 3.492847291847392
-			23 -> 1.739482738472938
-			24 -> 7.293847291847382
-			25 -> 5.394827394827394
-			26 -> 2.847391847392847
-			27 -> 8.847291847392847
-			28 -> 4.738472938472938
-			29 -> 6.293847391847382
-			30 -> 3.847291847392847
-			31 -> 1.492847291847392
-			32 -> 9.293847291847382
-			33 -> 5.847291847392847
-			34 -> 2.120381029475602
-			35 -> 7.390481264726194
-			36 -> 4.293012462419412
-			37 -> 6.301412704170294
-			38 -> 3.738472938472938
-			39 -> 1.847291847392847
-			40 -> 8.213901280149210
-			41 -> 5.394827394827394
-			42 -> 2.201381022038956
-			43 -> 9.310129031284698
-			44 -> 10.32131031284698
-			45 -> 1.130712039820147
-			else -> 1.2309829040349309
-		}
-	}
-
-	private fun getFixedEncryptionKey(strategy: Int): String {
-		val baseKey = getKeyByStrategy(strategy)
-		return (PI * baseKey).toString()
-	}
-
-	private fun hexToBytes(hex: String): ByteArray {
-		// Cải thiện: Đảm bảo không crash nếu chuỗi hex có độ dài lẻ
-		if (hex.length % 2 != 0) {
-			// Hoặc log một cảnh báo
-			return ByteArray(0)
-		}
-		return ByteArray(hex.length / 2) {
-			hex.substring(it * 2, it * 2 + 2).toInt(16).toByte()
 		}
 	}
 
