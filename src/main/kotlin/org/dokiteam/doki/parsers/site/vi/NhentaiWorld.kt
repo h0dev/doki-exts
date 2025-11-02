@@ -48,7 +48,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
 	)
 
-	// *** HÀM GETLISTPAGE (Giữ nguyên như file của bạn) ***
+	// *** HÀM GETLISTPAGE ***
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		val urlBuilder = urlBuilder()
 
@@ -58,10 +58,8 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 		if (tagKey != null) {
 			urlBuilder.addPathSegment("genre").addPathSegment(tagKey)
 		} else if (query != null) {
-			// search.html dùng path /genre/all
 			urlBuilder.addPathSegment("genre").addPathSegment("all")
 		}
-		// (Trang chủ không cần path)
 
 		urlBuilder.addQueryParameter(
 			"sort",
@@ -94,8 +92,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 		val doc = webClient.httpGet(urlBuilder.build()).parseHtml()
 		val mangaList = mutableListOf<Manga>()
 
-		// 1. Thử tìm bằng HTML (SSR Fallback, dựa trên search.html và home.html)
-		// Selector được cập nhật để chính xác hơn
+		// 1. Thử tìm bằng HTML (SSR Fallback)
 		val mangaElements = doc.select("div.grid[class*='grid-cols'] > div > a[href^=/g/]")
 		if (mangaElements.isNotEmpty()) {
 			return mangaElements.map { a ->
@@ -113,7 +110,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 					rating = RATING_UNKNOWN,
 					contentRating = ContentRating.ADULT,
 					coverUrl = coverUrl,
-					tags = emptySet(),
+					tags = emptySet(), // Đúng: Không lấy tag ở list page
 					state = null,
 					authors = emptySet(),
 					source = source,
@@ -123,27 +120,25 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 
 		// 2. Logic chính: Parse JSON stream (RSC)
 		val scripts = doc.select("script")
-		// *** FIX (Mới): RegEx ĐÃ UN-ESCAPE (không còn \\) ***
-		val regex = Pattern.compile("href:\"(\\/g\\/\\d+)\".*?alt:\"(.*?)\".*?src:\"(https.*?thumbnail\\.jpg)\"")
+		// RegEx tìm chuỗi CÓ ESCAPE (\")
+		val regex = Pattern.compile("href:\\\\\"(\\/g\\/\\d+)\\\\\".*?alt:\\\\\"(.*?)\\\\\".*?src:\\\\\"(https.*?thumbnail\\.jpg)\\\\\"")
 
 		for (script in scripts) {
 			if (script.hasAttr("src")) continue
 
 			val scriptData = script.data()
-			if (scriptData.contains("max-h-[405px]")) { // "mồi" (từ home.html/search.html)
+			if (scriptData.contains("max-h-[405px]")) { // "mồi"
 				val matcher = regex.matcher(scriptData)
 
 				while (matcher.find()) {
 					val href = "https://$domain${matcher.group(1)}"
 
 					val titleEscaped = matcher.group(2) ?: ""
-					// Logic unescape title vẫn cần thiết phòng trường hợp title chứa ký tự đặc biệt
 					val title = try {
 						JSONArray("[\"$titleEscaped\"]").getString(0)
 					} catch (e: Exception) {
 						titleEscaped
 					}
-					// Cover URL không cần replace nữa
 					val coverUrl = matcher.group(3)
 
 					mangaList.add(
@@ -156,7 +151,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 							rating = RATING_UNKNOWN,
 							contentRating = ContentRating.ADULT,
 							coverUrl = coverUrl,
-							tags = emptySet(),
+							tags = emptySet(), // Đúng: Không lấy tag ở list page
 							state = null,
 							authors = emptySet(),
 							source = source,
@@ -171,21 +166,26 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 		return emptyList()
 	}
 
-	// *** HÀM GETDETAILS (ĐÃ SỬA LỖI CHAPTERS + THỨ TỰ) ***
+	// *** HÀM GETDETAILS (FIX LỖI TAG + THỨ TỰ CHAPTER) ***
 	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.url).parseHtml()
 
-		// Các selector HTML này đều khớp với info.html (OK)
+		// Phần parse HTML
 		val title = doc.selectFirst("h1.md\\:text-2xl")?.text() ?: manga.title
+		
+		// *** FIX: Sửa lỗi 'title = title' -> 'title = tagName' ***
+		// ĐOẠN NÀY ĐÃ ĐÚNG:
 		val tags = doc.select("a[href^=/genre/]").mapNotNullToSet { a ->
-			val tagName = a.text().toTitleCase(sourceLocale)
+			val tagName = a.text().toTitleCase(sourceLocale) // Lấy tên của tag
 			val tagKey = a.attrOrNull("href")?.substringAfterLast('/')
 			if (tagKey != null && tagName.isNotEmpty()) {
+				// Dùng tagName (tên tag) thay vì title (tên truyện)
 				MangaTag(title = tagName, key = tagKey, source = source)
 			} else {
 				null
 			}
 		}
+		
 		val stateText = doc.select("a[href*=?status=]")?.text()
 		val state = when (stateText) {
 			"Đang tiến hành" -> MangaState.ONGOING
@@ -195,11 +195,11 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 		val description = doc.selectFirst("div#introduction-wrap p.font-light")?.html()?.nullIfEmpty()
 		val altTitles = emptySet<String>()
 
+		// Phần parse Chapter (Logic tìm chuỗi escape \\\"data\\\": là ĐÚNG)
 		val chapters = mutableListOf<MangaChapter>()
 		val scripts = doc.select("script")
 		val chapterDateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT)
 
-		// *** FIX: RegEx phải khớp với chuỗi đã escape (\\\" là để khớp \") ***
 		val regexData = Pattern.compile("\\\\\"data\\\\\":(\\[.*?\\])")
 		val regexId = Pattern.compile("\\\\\"id\\\\\":\\\\\"(\\d+)\\\\\\\"")
 
@@ -210,23 +210,19 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 			if (script.hasAttr("src")) continue
 			val scriptData = script.data()
 
-			// *** FIX: Tìm chuỗi đã escape (\\\" là để khớp \") ***
+			// Tìm chuỗi đã escape (\\\" là để khớp \")
 			if (scriptData.contains("\\\"data\\\":") && scriptData.contains("\\\"id\\\":\\\"")) {
 
-				// 2. Lấy ID
 				val idMatcher = regexId.matcher(scriptData)
 				if (idMatcher.find()) {
 					mangaId = idMatcher.group(1)
 				}
 
-				// 3. Lấy Data
 				val dataMatcher = regexData.matcher(scriptData)
 				if (dataMatcher.find()) {
-					// Un-escape chuỗi JSON trước khi parse
 					viChaptersStr = dataMatcher.group(1)?.replace("\\\"", "\"") ?: "[]"
 				}
 
-				// 4. Nếu đã tìm thấy, thoát vòng lặp
 				if (mangaId.isNotEmpty() && viChaptersStr != "[]") {
 					break
 				}
@@ -237,7 +233,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 			mangaId = manga.url.substringAfterLast('/') // Fallback
 		}
 
-		// 4. Parse mảng JSON
+		// 5. Parse mảng JSON
 		try {
 			val viArray = JSONArray(viChaptersStr)
 
@@ -252,6 +248,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 					MangaChapter(
 						id = generateUid(url),
 						title = "Chapter $name",
+						// Giữ số chapter, nhưng không dùng để sort nữa
 						number = name.toFloatOrNull() ?: (i + 1).toFloat(),
 						url = url,
 						scanlator = null,
@@ -263,8 +260,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 				)
 			}
 		} catch (e: Exception) {
-			// (Nếu parse lỗi, chapters sẽ rỗng)
-			// throw ParseException("Lỗi parse JSON chapter: $viChaptersStr", manga.url)
+			// Bỏ qua lỗi parse JSON, trả về list rỗng
 		}
 
 		return manga.copy(
@@ -273,16 +269,16 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 			state = state,
 			description = description,
 			altTitles = altTitles,
-			// *** FIX: Đảo ngược list (JSON từ mới -> cũ) để có thứ tự web (cũ -> mới) ***
+			// *** FIX: Đảo ngược list (đang từ 62..1 -> 1..62) để có thứ tự tăng dần ***
 			chapters = chapters.reversed(),
 		)
 	}
 
-	// *** HÀM GETPAGES (Giữ nguyên như file của bạn) ***
+	// *** HÀM GETPAGES (FIX LỖI: Quay lại tìm chuỗi KHÔNG ESCAPE) ***
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val doc = webClient.httpGet(chapter.url).parseHtml()
 
-		// *** FIX (Mới): Cập nhật selector HTML (Fallback) cho read.html ***
+		// 1. Fallback: Cập nhật selector HTML cho read.html
 		val root = doc.select("img.read-image")
 		if (root.isNotEmpty()) {
 			return root.map { img ->
@@ -296,19 +292,21 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 			}
 		}
 
+		// 2. Logic chính: Parse JSON stream (RSC)
 		val scripts = doc.select("script")
-		// *** FIX (Mới): Thay "pictures" bằng "linkList" và dùng regex an toàn hơn ***
+		// *** FIX: RegEx tìm chuỗi KHÔNG escape (theo file read.html) ***
 		val regex = Pattern.compile("\"linkList\":(\\[[^\\]]+\\])")
 
 		for (script in scripts) {
 			if (script.hasAttr("src")) continue
 
 			val scriptData = script.data()
-			// *** FIX (Mới): Thay "pictures" bằng "linkList" ***
-			if (scriptData.contains("linkList")) {
+			// *** FIX: Tìm chuỗi KHÔNG escape ***
+			if (scriptData.contains("\"linkList\":")) {
 				val matcher = regex.matcher(scriptData)
 
 				if (matcher.find()) {
+					// *** FIX: Không cần un-escape (replace) ***
 					val pagesStr = matcher.group(1) ?: "[]"
 					val pagesArray = try {
 						JSONArray(pagesStr)
@@ -333,7 +331,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 	}
 
 	/**
-	 * Logic fetchTags động (Giữ nguyên như file của bạn)
+	 * Logic fetchTags động (Giữ nguyên)
 	 */
 	private suspend fun fetchTags(): Set<MangaTag> {
 		val doc = webClient.httpGet("https://$domain").parseHtml()
@@ -353,6 +351,7 @@ internal class NhentaiWorld(context: MangaLoaderContext) :
 
 				val optionsStr = docJS.substring(optionsStart + 7, optionsEnd + 2)
 
+				// Logic un-escape và parse này có vẻ vẫn đúng
 				val optionsArray = JSONArray(
 					optionsStr
 						.replace(Regex(",description:\\s*\"[^\"]*\"(,?)"), "$1")
