@@ -17,10 +17,11 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 	override val configKeyDomain = ConfigKey.Domain("vi-hentai.moe", "vi-hentai.org")
 
 	companion object {
-		// Rate limit for getPages: 15 requests per minute -> 60,000ms / 15 = 4000ms per request
-		private const val PAGES_REQUEST_DELAY_MS = 5000L
-		private val pagesRequestMutex = Mutex()
-		private var lastPagesRequestTime = 0L
+		// THAY ĐỔI: Đổi tên biến để áp dụng global, không chỉ cho "pages"
+		// Rate limit chung: 15 requests per minute -> 60,000ms / 15 = 4000ms per request
+		private const val GLOBAL_REQUEST_DELAY_MS = 4000L
+		private val requestMutex = Mutex()
+		private var lastRequestTime = 0L
 	}
 
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
@@ -49,6 +50,22 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 		availableTags = availableTags(),
 		availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED),
 	)
+
+	// THAY ĐỔI: Thêm hàm helper private để quản lý rate limit tập trung
+	/**
+	 * Đảm bảo các request tuân thủ rate limit (GLOBAL_REQUEST_DELAY_MS)
+	 * sử dụng một Mutex chung.
+	 */
+	private suspend fun applyRateLimit() {
+		requestMutex.withLock {
+			val currentTime = System.currentTimeMillis()
+			val timeSinceLastRequest = currentTime - lastRequestTime
+			if (timeSinceLastRequest < GLOBAL_REQUEST_DELAY_MS) {
+				delay(GLOBAL_REQUEST_DELAY_MS - timeSinceLastRequest)
+			}
+			lastRequestTime = System.currentTimeMillis()
+		}
+	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		val url = buildString {
@@ -139,6 +156,8 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 			}
 		}
 
+		// THAY ĐỔI: Áp dụng rate limit trước khi gọi
+		applyRateLimit()
 		val doc = webClient.httpGet(url).parseHtml()
 
 		return doc.select("div.grid div.relative")
@@ -166,6 +185,8 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 	}
 
 	override suspend fun getDetails(manga: Manga): Manga {
+		// THAY ĐỔI: Áp dụng rate limit trước khi gọi
+		applyRateLimit()
 		val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
 		val author = root.selectFirst("div.mt-2:contains(Tác giả) span a")?.textOrNull()
 
@@ -208,15 +229,8 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		// Apply rate limiting specifically for fetching pages
-		pagesRequestMutex.withLock {
-			val currentTime = System.currentTimeMillis()
-			val timeSinceLastRequest = currentTime - lastPagesRequestTime
-			if (timeSinceLastRequest < PAGES_REQUEST_DELAY_MS) {
-				delay(PAGES_REQUEST_DELAY_MS - timeSinceLastRequest)
-			}
-			lastPagesRequestTime = System.currentTimeMillis()
-		}
+		// THAY ĐỔI: Áp dụng rate limit (đã được chuẩn hoá)
+		applyRateLimit()
 
 		val doc = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseHtml()
 
@@ -235,7 +249,7 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 		}
 	}
 
-	// Đã thay đổi: Hardcode tags để tối ưu hiệu suất, tránh gọi request không cần thiết
+	// Việc hardcode tags này là một tối ưu rất tốt, giữ nguyên.
 	private fun availableTags(): Set<MangaTag> = setOf(
 		MangaTag(key = "4", title = "3D", source = source),
 		MangaTag(key = "5", title = "Ahegao", source = source),
