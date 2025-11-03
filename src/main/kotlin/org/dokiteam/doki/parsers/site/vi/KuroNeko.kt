@@ -1,6 +1,6 @@
 package org.dokiteam.doki.parsers.site.vi
 
-import kotlinx...coroutines.delay
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.dokiteam.doki.parsers.MangaLoaderContext
