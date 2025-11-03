@@ -1,6 +1,6 @@
 package org.dokiteam.doki.parsers.site.vi
 
-import kotlinx.coroutines.delay
+import kotlinx...coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.dokiteam.doki.parsers.MangaLoaderContext
@@ -21,7 +21,6 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 		private const val PAGES_REQUEST_DELAY_MS = 5000L
 		private val pagesRequestMutex = Mutex()
 		private var lastPagesRequestTime = 0L
-		const val PATH = "AxsAEQdJWk4YDUkHDgcVEwxaBQoHShIXHwYbD1seHAwHOwAKCAYFFw==\n"
 	}
 
 	override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
@@ -236,19 +235,68 @@ internal class KuroNeko(context: MangaLoaderContext) : PagedMangaParser(context,
 		}
 	}
 
-	private suspend fun availableTags(): Set<MangaTag> {
-		val doc = webClient.httpGet("https://$domain/tim-kiem").parseHtml()
-		val regex = Regex("toggleGenre\\('([0-9]+)'\\)")
-		return doc.select("div.grid.grid-cols-3 label").mapNotNullToSet { label ->
-			val attr = label.attr("@click")
-			val number = attr.findGroupValue(regex) ?: return@mapNotNullToSet null
-			MangaTag(
-				key = number,
-				title = label.text(),
-				source = source,
-			)
-		}.toSet()
-	}
+	// Đã thay đổi: Hardcode tags để tối ưu hiệu suất, tránh gọi request không cần thiết
+	private fun availableTags(): Set<MangaTag> = setOf(
+		MangaTag(key = "4", title = "3D", source = source),
+		MangaTag(key = "5", title = "Ahegao", source = source),
+		MangaTag(key = "6", title = "Anal", source = source),
+		MangaTag(key = "7", title = "Big Ass", source = source),
+		MangaTag(key = "8", title = "Big Boobs", source = source),
+		MangaTag(key = "9", title = "BDSM", source = source),
+		MangaTag(key = "10", title = "Blowjob", source = source),
+		MangaTag(key = "11", title = "Bondage", source = source),
+		MangaTag(key = "12", title = "Cosplay", source = source),
+		MangaTag(key = "13", title = "Dark Skin", source = source),
+		MangaTag(key = "14", title = "Double Penetration", source = source),
+		MangaTag(key = "15", title = "Full Color", source = source),
+		MangaTag(key = "16", title = "Futanari", source = source),
+		MangaTag(key = "17", title = "Gender Bender", source = source),
+		MangaTag(key = "18", title = "Harem", source = source),
+		MangaTag(key = "19", title = "Incest", source = source),
+		MangaTag(key = "20", title = "Mind Break", source = source),
+		MangaTag(key = "21", title = "Mind Control", source = source),
+		MangaTag(key = "22", title = "Monster", source = source),
+		MangaTag(key = "23", title = "Nakadashi", source = source),
+		MangaTag(key = "24", title = "Netorare", source = source),
+		MangaTag(key = "25", title = "Loli", source = source),
+		MangaTag(key = "26", title = "Rape", source = source),
+		MangaTag(key = "27", title = "Milf", source = source),
+		MangaTag(key = "28", title = "Rimjob", source = source),
+		MangaTag(key = "29", title = "Schoolgirl", source = source),
+		MangaTag(key = "30", title = "Shota", source = source),
+		MangaTag(key = "31", title = "Tentacles", source = source),
+		MangaTag(key = "32", title = "Yuri", source = source),
+		MangaTag(key = "33", title = "Yaoi", source = source),
+		MangaTag(key = "34", title = "Trap", source = source),
+		MangaTag(key = "35", title = "School Uniform", source = source),
+		MangaTag(key = "36", title = "Swimsuit", source = source),
+		MangaTag(key = "37", title = "Pregnant", source = source),
+		MangaTag(key = "38", title = "Elf", source = source),
+		MangaTag(key = "39", title = "Teacher", source = source),
+		MangaTag(key = "40", title = "Stockings", source = source),
+		MangaTag(key = "41", title = "Masturbation", source = source),
+		MangaTag(key = "42", title = "Netori", source = source),
+		MangaTag(key = "43", title = "Cheating", source = source),
+		MangaTag(key = "44", title = "X-ray", source = source),
+		MangaTag(key = "45", title = "Forced", source = source),
+		MangaTag(key = "46", title = "Handjob", source = source),
+		MangaTag(key = "47", title = "Footjob", source = source),
+		MangaTag(key = "48", title = "Sportswear", source = source),
+		MangaTag(key = "49", title = "Deepthroat", source = source),
+		MangaTag(key = "50", title = "Oppai", source = source),
+		MangaTag(key = "51", title = "Ryona", source = source),
+		MangaTag(key = "52", title = "Parasite", source = source),
+		MangaTag(key = "53", title = "Scat", source = source),
+		MangaTag(key = "54", title = "Guro", source = source),
+		MangaTag(key = "55", title = "Fellatio", source = source),
+		MangaTag(key = "56", title = "Manga", source = source),
+		MangaTag(key = "57", title = "Manhwa", source = source),
+		MangaTag(key = "58", title = "Manhua", source = source),
+		MangaTag(key = "59", title = "Oneshot", source = source),
+		MangaTag(key = "60", title = "Doujinshi", source = source),
+		MangaTag(key = "61", title = "Comic", source = source),
+		MangaTag(key = "62", title = "NTR", source = source)
+	)
 
 	private fun parseDateTime(dateStr: String): Long = runCatching {
 		val parts = dateStr.split(' ')
