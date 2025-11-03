@@ -344,7 +344,7 @@ internal class MimiHentai(context: MangaLoaderContext) :
 		val proxyUrl = proxyEndpoint.toHttpUrl().newBuilder()
 			.addQueryParameter("imageUrl", originalUrl.toString())
 			.addQueryParameter("drmString", gt)
-			.addQueryCParameter("format", "jpeg")
+			.addQueryParameter("format", "jpeg")
 			.build()
 
 		// 2. Xây dựng một request GET "sạch" (không kế thừa header)
