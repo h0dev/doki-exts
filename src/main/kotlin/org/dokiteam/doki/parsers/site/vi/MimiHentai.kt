@@ -1,12 +1,12 @@
 package org.dokiteam.doki.parsers.site.vi
 
 // import kotlinx.coroutines.runBlocking // Bị xóa
-import okhttp3.Interceptor // Bị xóa
+import okhttp3.Interceptor
 // import okhttp3.MediaType.Companion.toMediaType // Bị xóa
 // import okhttp3.RequestBody.Companion.toRequestBody // Bị xóa
-// import okhttp3.HttpUrl.Companion.toHttpUrl // Bị xóa
-import okhttp3.Response // Bị xóa
-import okhttp3.Request // Bị xóa
+import okhttp3.HttpUrl.Companion.toHttpUrl // Thêm import này
+import okhttp3.Response
+import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import org.dokiteam.doki.parsers.MangaLoaderContext
@@ -21,7 +21,7 @@ import org.dokiteam.doki.parsers.util.*
 import org.dokiteam.doki.parsers.util.json.*
 import java.text.SimpleDateFormat
 import java.util.*
-// import kotlin.math.PI // Bị xóa
+import java.util.concurrent.TimeUnit // [THÊM] Import để xử lý timeout
 
 @MangaSourceParser("MIMIHENTAI", "MimiHentai", "vi", type = ContentType.HENTAI)
 internal class MimiHentai(context: MangaLoaderContext) :
@@ -30,8 +30,6 @@ internal class MimiHentai(context: MangaLoaderContext) :
 	private val apiSuffix = "api/v2/manga"
 	override val configKeyDomain = ConfigKey.Domain("mimihentai.com", "hentaihvn.com")
 	override val userAgentKey = ConfigKey.UserAgent(UserAgents.KOTATSU)
-
-	// ... (Toàn bộ code từ getFavicons đến getDetails giữ nguyên) ...
 
 	override suspend fun getFavicons(): Favicons {
 		return Favicons(
@@ -286,9 +284,9 @@ internal class MimiHentai(context: MangaLoaderContext) :
 	}
 
 	/**
-	 * [CHỈNH SỬA]
-	 * Gộp logic gọi proxy trực tiếp vào getPages.
-	 * Xây dựng URL GET proxy đầy đủ.
+	 * [QUAY LẠI]
+	 * Trả về URL "giả" chứa DRM_MARKER.
+	 * Interceptor sẽ xử lý URL này.
 	 */
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val json = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).parseJson()
@@ -297,17 +295,8 @@ internal class MimiHentai(context: MangaLoaderContext) :
 			val gt = jo.getStringOrNull("drm")
 			
 			val finalUrl = if (gt != null) {
-				// Nếu có DRM, xây dựng URL proxy
-				buildString {
-					append("https://mdimg.hdev.it.eu.org/descramble")
-					append("?imageUrl=")
-					append(imageUrl.urlEncoded()) // Đảm bảo URL được encode
-					append("&drmString=")
-					append(gt.urlEncoded()) // Đảm bảo DRM string được encode
-					append("&format=jpeg")
-				}
+				"$imageUrl/$DRM_MARKER/$gt"
 			} else {
-				// Nếu không có DRM, trả về URL ảnh gốc
 				imageUrl
 			}
 
@@ -321,10 +310,57 @@ internal class MimiHentai(context: MangaLoaderContext) :
 	}
 
 	/**
-	 * [ĐÃ XÓA]
-	 * Toàn bộ hàm intercept() đã bị xóa.
+	 * [QUAY LẠI & CẢI TIẾN]
+	 * Quay lại dùng Interceptor để:
+	 * 1. Gửi request "sạch" (không header) đến proxy -> Sửa lỗi 500.
+	 * 2. Tăng read timeout -> Sửa lỗi timeout do proxy giải mã lâu.
 	 */
-	// override fun intercept(chain: Interceptor.Chain): Response { ... }
+	override fun intercept(chain: Interceptor.Chain): Response {
+		val request = chain.request()
+		val url = request.url
+
+		val pathSegments = url.pathSegments
+		val markerIndex = pathSegments.indexOf(DRM_MARKER)
+
+		if (markerIndex == -1 || markerIndex + 1 >= pathSegments.size) {
+			// Không phải ảnh DRM, cho request đi tiếp
+			return chain.proceed(request)
+		}
+		
+		// Trích xuất drmString (gt)
+		val gt = pathSegments[markerIndex + 1]
+
+		// Trích xuất URL ảnh gốc
+		val originalUrl = url.newBuilder().apply {
+			removePathSegment(pathSegments.size - 1) // Xóa gt
+			removePathSegment(pathSegments.size - 2) // Xóa DRM_MARKER
+		}.build()
+
+		// --- LOGIC GỌI PROXY BẰNG GET ---
+
+		val proxyEndpoint = "https://mdimg.hdev.it.eu.org/descramble"
+		
+		// 1. Tạo URL với query parameters
+		val proxyUrl = proxyEndpoint.toHttpUrl().newBuilder()
+			.addQueryParameter("imageUrl", originalUrl.toString())
+			.addQueryParameter("drmString", gt)
+			.addQueryCParameter("format", "jpeg")
+			.build()
+
+		// 2. Xây dựng một request GET "sạch" (không kế thừa header)
+		val proxyRequest = Request.Builder()
+			.url(proxyUrl)
+			.get()
+			.build()
+
+		// 3. [SỬA LỖI TIMEOUT]
+		// Thực thi request với read timeout đã tăng lên 120 giây
+		// để cho proxy có đủ thời gian giải mã và redirect.
+		return chain.withReadTimeout(120, TimeUnit.SECONDS)
+			.withWriteTimeout(120, TimeUnit.SECONDS) // Thêm cả write/connect
+			.withConnectTimeout(120, TimeUnit.SECONDS)
+			.proceed(proxyRequest)
+	}
 
 	private suspend fun fetchTags(): Set<MangaTag> {
 		val url = "https://$domain/$apiSuffix/genres"
@@ -338,11 +374,8 @@ internal class MimiHentai(context: MangaLoaderContext) :
 		}
 	}
 
-	/**
-	 * [ĐÃ XÓA]
-	 * DRM_MARKER không còn cần thiết.
-	 */
-	// companion object {
-	// 	private const val DRM_MARKER = "mhdrm"
-	// }
+	// [QUAY LẠI] Thêm lại companion object
+	companion object {
+		private const val DRM_MARKER = "mhdrm"
+	}
 }
