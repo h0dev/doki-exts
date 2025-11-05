@@ -32,9 +32,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
         SortOrder.ALPHABETICAL_DESC
     )
 
-    // FIX 1: Đã sửa lỗi API Mismatch (L40-L43).
-    // Sử dụng constructor đơn giản hơn của MangaListFilterCapabilities.
-    // Framework sẽ tự động bật filter tag nếu getFilterOptions() trả về danh sách tag.
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
@@ -83,9 +80,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
             // Thêm tham số sorting nếu không phải là trang tìm kiếm
             if (filter.query.isNullOrEmpty()) {
-                // FIX 2: Đã sửa lỗi 'Unresolved reference url' (L89).
-                // Sử dụng 'contains("?")' (tham chiếu đến StringBuilder hiện tại)
-                // thay vì 'url.contains("?")' (tham chiếu đến biến chưa được khởi tạo).
                 append(if (contains("?")) "&" else "?")
                 append("order_by=")
                 append(
@@ -174,9 +168,9 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
                     volume = 0,
                     url = href,
                     scanlator = null,
-                    // FIX 3: Đã sửa lỗi 'Argument type mismatch' (L182).
-                    // Gọi hàm parse() đã được cập nhật (bên dưới) để xử lý String? và trả về Long?
-                    uploadDate = chapterDateParser.parse(dateText),
+                    // FIX (Lỗi L179): Thêm ?: 0L để cung cấp giá trị mặc định
+                    // khi hàm parse trả về null, vì uploadDate yêu cầu Long (không null).
+                    uploadDate = chapterDateParser.parse(dateText) ?: 0L,
                     branch = null,
                     source = source,
                 )
@@ -229,21 +223,19 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
     /**
      * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
-     * FIX 3 (tiếp theo): Cập nhật hàm parse để chấp nhận String? và trả về Long?
-     * Điều này giải quyết lỗi type mismatch và làm code sạch hơn.
+     * Hàm này trả về Long? (nullable Long)
      */
     private class RelativeDateParser(private val locale: Locale) {
         fun parse(relativeDate: String?): Long? {
-            // Trả về null nếu input là null hoặc rỗng
             if (relativeDate.isNullOrBlank()) return null
             
             try {
                 val now = Calendar.getInstance()
                 val parts = relativeDate.lowercase(locale).split(" ")
 
-                if (parts.size < 2) return null // Lỗi format
+                if (parts.size < 2) return null
 
-                val amount = parts[0].toIntOrNull() ?: return null // Lỗi số lượng
+                val amount = parts[0].toIntOrNull() ?: return null
                 val unit = parts[1]
 
                 when (unit) {
@@ -253,11 +245,10 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
                     "tuần" -> now.add(Calendar.WEEK_OF_YEAR, -amount)
                     "tháng" -> now.add(Calendar.MONTH, -amount)
                     "năm" -> now.add(Calendar.YEAR, -amount)
-                    else -> return null // Không rõ đơn vị
+                    else -> return null
                 }
                 return now.timeInMillis
             } catch (e: Exception) {
-                // Nếu lỗi, trả về null (không xác định)
                 return null
             }
         }
