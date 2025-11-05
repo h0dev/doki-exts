@@ -15,7 +15,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
     override val configKeyDomain = ConfigKey.Domain("mehentai.top")
 
-    // Thêm header Referer cơ bản, trang này không yêu cầu token như LxManga
     override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
         .build()
@@ -25,7 +24,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
         keys.add(userAgentKey)
     }
 
-    // Dựa trên phân tích file main.html (order_by=view, order_by=update_time)
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.UPDATED,
         SortOrder.POPULARITY,
@@ -34,18 +32,17 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
         SortOrder.ALPHABETICAL_DESC
     )
 
+    // FIX 1: Đã sửa lỗi API Mismatch (L40-L43).
+    // Sử dụng constructor đơn giản hơn của MangaListFilterCapabilities.
+    // Framework sẽ tự động bật filter tag nếu getFilterOptions() trả về danh sách tag.
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
-            isTagSupported = true,
-            tagInclusion = MangaListFilter.TagInclusion.SINGLE, // URL chỉ hỗ trợ 1 tag: /the-loai/{key}
-            isStateSupported = false, // Không thấy UI filter theo state
-            tagExclusion = MangaListFilter.TagExclusion.UNSUPPORTED
         )
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
         availableTags = availableTags(),
-        availableStates = EnumSet.noneOf(MangaState::class.java) // Không hỗ trợ filter state
+        availableStates = EnumSet.noneOf(MangaState::class.java)
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
@@ -86,14 +83,17 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
             // Thêm tham số sorting nếu không phải là trang tìm kiếm
             if (filter.query.isNullOrEmpty()) {
-                append(if (url.contains("?")) "&" else "?")
+                // FIX 2: Đã sửa lỗi 'Unresolved reference url' (L89).
+                // Sử dụng 'contains("?")' (tham chiếu đến StringBuilder hiện tại)
+                // thay vì 'url.contains("?")' (tham chiếu đến biến chưa được khởi tạo).
+                append(if (contains("?")) "&" else "?")
                 append("order_by=")
                 append(
                     when (order) {
                         SortOrder.POPULARITY -> "view"
-                        SortOrder.NEWEST -> "created_at" // Suy đoán
-                        SortOrder.ALPHABETICAL -> "name" // Suy đoán
-                        SortOrder.ALPHABETICAL_DESC -> "name" // Suy đoán
+                        SortOrder.NEWEST -> "created_at"
+                        SortOrder.ALPHABETICAL -> "name"
+                        SortOrder.ALPHABETICAL_DESC -> "name"
                         else -> "update_time" // Mặc định
                     }
                 )
@@ -109,7 +109,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // Selector chung cho trang chủ (main.html) và trang tìm kiếm (search.html)
         val containerSelector = "div#halim-advanced-widget-6-ajax-box"
         val itemSelector = "article.thumb.grid-item"
 
@@ -117,7 +116,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
             val a = article.selectFirstOrThrow("a.halim-thumb")
             val href = a.attrAsRelativeUrl("href")
             val img = a.selectFirstOrThrow("figure img.lazyload")
-            // Ưu tiên data-src, fallback về src
             val coverUrl = img.attrOrNull("data-src") ?: img.attr("src")
 
             Manga(
@@ -140,21 +138,19 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
 
-        // Phân tích info.html
         val author = root.selectFirst("span.directors i.fa-solid.fa-user + span")?.text()
-            ?.takeIf { it.isNotBlank() && it != "Đang Cập Nhật" } // Lọc giá trị "Đang Cập Nhật"
+            ?.takeIf { it.isNotBlank() && it != "Đang Cập Nhật" }
 
         val statusText = root.selectFirst("div.thong-tin span:has(i.fa-sharp.fa-solid.fa-fan) + span span")?.text()
         val state = when (statusText) {
             "Truyện Full" -> MangaState.FINISHED
-            "Đang Cập Nhật" -> MangaState.ONGOING // Giả định
+            "Đang Cập Nhật" -> MangaState.ONGOING
             else -> null
         }
 
         val tags = root.select("span.category:has(i.fa-solid.fa-tag) + span a").mapToSet { a ->
             MangaTag(
                 key = a.attr("href").removeSuffix("/").substringAfterLast('/'),
-                // Lấy title từ text, dọn dẹp "- "
                 title = a.text().removePrefix("- ").trim(),
                 source = source,
             )
@@ -162,31 +158,32 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
         val description = root.selectFirst("article[id^=post-].item-content p")?.text()
 
-        // Hàm helper để parse "X ngày trước"
+        // Khởi tạo helper parser
         val chapterDateParser = RelativeDateParser(Locale("vi"))
 
         val chapters = root.select("ul#list-chap li.chapter a")
-            .mapChapters(reversed = true) { i, a -> // list-chap đảo ngược (chap 5 -> 1)
+            .mapChapters(reversed = true) { i, a ->
                 val href = a.attrAsRelativeUrl("href")
                 val name = a.selectFirstOrThrow("span.chap-name").text()
-                val dateText = a.selectFirst("span[style*=text-align]")?.text() // "4 ngày trước"
+                val dateText = a.selectFirst("span[style*=text-align]")?.text()
 
                 MangaChapter(
                     id = generateUid(href),
                     title = name,
-                    // Thử parse số từ "Chapter X", nếu thất bại thì dùng index
                     number = name.substringAfter("Chapter ").toFloatOrNull() ?: (i + 1).toFloat(),
                     volume = 0,
                     url = href,
-                    scanlator = null, // Không có thông tin nhóm dịch
-                    uploadDate = dateText?.let { chapterDateParser.parse(it) }, // Parse relative date
+                    scanlator = null,
+                    // FIX 3: Đã sửa lỗi 'Argument type mismatch' (L182).
+                    // Gọi hàm parse() đã được cập nhật (bên dưới) để xử lý String? và trả về Long?
+                    uploadDate = chapterDateParser.parse(dateText),
                     branch = null,
                     source = source,
                 )
             }
 
         return manga.copy(
-            altTitles = emptySet(), // Không tìm thấy tên khác trong info.html
+            altTitles = emptySet(),
             state = state,
             tags = tags,
             authors = setOfNotNull(author),
@@ -199,14 +196,9 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
 
-        // Phân tích read.html
         val imageElements = doc.select("div.contentimg div.imageload img.simg")
 
         return imageElements.map { img ->
-            // Trang này dùng nhiều server proxy.
-            // Ưu tiên 'data-sv3' (i0.wp.com)
-            // Fallback về 'data-sv1' (duckduckgo)
-            // Fallback cuối cùng về 'src'
             val url = img.attrOrNull("data-sv3")
                 ?: img.attrOrNull("data-sv1")
                 ?: img.attr("src")
@@ -221,13 +213,11 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
     }
 
     private suspend fun availableTags(): Set<MangaTag> {
-        // Lấy tags từ dropdown menu ở trang chủ (main.html)
         val url = "https://$domain/"
         val doc = webClient.httpGet(url).parseHtml()
 
         return doc.select("ul.dropdown-menu li a[href*='/the-loai/']").map { a ->
             val key = a.attr("href").removeSuffix("/").substringAfterLast('/')
-            // Lấy text, ví dụ: "- 18+", dọn dẹp thành "18+"
             val title = a.text().removePrefix("- ").trim()
             MangaTag(
                 key = key,
@@ -239,18 +229,21 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
     /**
      * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
-     * (Không có trong file mẫu LxManga, nhưng cần thiết cho trang này
-     * vì trang info không cung cấp datetime attribute)
+     * FIX 3 (tiếp theo): Cập nhật hàm parse để chấp nhận String? và trả về Long?
+     * Điều này giải quyết lỗi type mismatch và làm code sạch hơn.
      */
     private class RelativeDateParser(private val locale: Locale) {
-        fun parse(relativeDate: String): Long {
+        fun parse(relativeDate: String?): Long? {
+            // Trả về null nếu input là null hoặc rỗng
+            if (relativeDate.isNullOrBlank()) return null
+            
             try {
                 val now = Calendar.getInstance()
                 val parts = relativeDate.lowercase(locale).split(" ")
 
-                if (parts.size < 2) return now.timeInMillis
+                if (parts.size < 2) return null // Lỗi format
 
-                val amount = parts[0].toIntOrNull() ?: return now.timeInMillis
+                val amount = parts[0].toIntOrNull() ?: return null // Lỗi số lượng
                 val unit = parts[1]
 
                 when (unit) {
@@ -260,12 +253,12 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
                     "tuần" -> now.add(Calendar.WEEK_OF_YEAR, -amount)
                     "tháng" -> now.add(Calendar.MONTH, -amount)
                     "năm" -> now.add(Calendar.YEAR, -amount)
-                    else -> return now.timeInMillis // Không parse được, trả về "bây giờ"
+                    else -> return null // Không rõ đơn vị
                 }
                 return now.timeInMillis
             } catch (e: Exception) {
-                // Nếu lỗi, trả về thời gian hiện tại
-                return Calendar.getInstance().timeInMillis
+                // Nếu lỗi, trả về null (không xác định)
+                return null
             }
         }
     }
