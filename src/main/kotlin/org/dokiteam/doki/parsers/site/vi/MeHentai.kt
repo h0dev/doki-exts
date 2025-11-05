@@ -129,6 +129,9 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
         }
     }
 
+    // =================================================================
+    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
+    // =================================================================
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
 
@@ -155,10 +158,15 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
         // Khởi tạo helper parser
         val chapterDateParser = RelativeDateParser(Locale("vi"))
 
-        val chapters = root.select("ul#list-chap li.chapter a")
-            .mapChapters(reversed = true) { i, a ->
+        // *** FIX: Đã sửa lại selector ***
+        // Chọn <a> là con trực tiếp (>) của ul#list-chap
+        // vì HTML của trang này là <ul> <a> <li> </li> </a> </ul>
+        val chapters = root.select("ul#list-chap > a")
+            .mapChapters(reversed = true) { i, a -> // list-chap đảo ngược (chap 5 -> 1)
                 val href = a.attrAsRelativeUrl("href")
-                val name = a.selectFirstOrThrow("span.chap-name").text()
+                
+                // Lấy thông tin từ các span bên trong thẻ <a>
+                val name = a.selectFirst("span.chap-name")?.text().orEmpty()
                 val dateText = a.selectFirst("span[style*=text-align]")?.text()
 
                 MangaChapter(
@@ -168,8 +176,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
                     volume = 0,
                     url = href,
                     scanlator = null,
-                    // FIX (Lỗi L179): Thêm ?: 0L để cung cấp giá trị mặc định
-                    // khi hàm parse trả về null, vì uploadDate yêu cầu Long (không null).
                     uploadDate = chapterDateParser.parse(dateText) ?: 0L,
                     branch = null,
                     source = source,
@@ -185,6 +191,9 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
             chapters = chapters,
         )
     }
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
@@ -223,7 +232,6 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
 
     /**
      * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
-     * Hàm này trả về Long? (nullable Long)
      */
     private class RelativeDateParser(private val locale: Locale) {
         fun parse(relativeDate: String?): Long? {
