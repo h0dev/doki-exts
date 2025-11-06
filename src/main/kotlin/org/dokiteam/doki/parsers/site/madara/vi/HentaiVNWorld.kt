@@ -1,11 +1,17 @@
 package org.dokiteam.doki.parsers.site.madara.vi
 
+import androidx.collection.ArrayMap // Cần import ArrayMap
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Document
 import org.dokiteam.doki.parsers.MangaLoaderContext
 import org.dokiteam.doki.parsers.MangaSourceParser
+import org.dokiteam.doki.parsers.exception.NotFoundException
 import org.dokiteam.doki.parsers.model.*
-import org.dokiteam.doki.parsers.site.madara.MadaraParser
+import org.dokiteam.doki.parsers.site.madara.MadaraParser // Dùng base Madara
 import org.dokiteam.doki.parsers.util.*
+import java.text.SimpleDateFormat
+import java.util.*
 
 /**
  * Parser cho HentaiVN.world, dựa trên MadaraParser.
@@ -140,6 +146,8 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 				append(pages.toString())
 			}
 		}
+        // Phải parseMangaList(doc) chứ không phải (doc, tagMap) vì ta đang override
+        // hàm parseMangaList(doc)
 		return parseMangaList(webClient.httpGet(url).parseHtml())
 	}
 
@@ -176,7 +184,10 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 				// Selector rating riêng của HentaiVN.world (từ main.html)
 				rating = item.selectFirst("div.meta-item.rating span.score")?.text()?.toFloatOrNull()?.div(5f)
 					?: RATING_UNKNOWN,
-				contentRating = ContentType.HENTAI, // Mặc định là HENTAI
+				
+				// SỬA LỖI: Đổi ContentType.HENTAI thành ContentRating.ADULT
+				contentRating = ContentRating.ADULT, 
+				
 				coverUrl = coverUrl,
 				largeCoverUrl = null,
 				tags = emptySet(), // Sẽ lấy ở getDetails
@@ -191,34 +202,74 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 
 	/**
 	 * Ghi đè `getDetails`:
-	 * Base class `MadaraParser` đã xử lý đúng logic AJAX (`loadChapters`)
-	 * vì `ifno.html` *không* chứa `div.listing-chapters_wrap` (selectTestAsync)
-	 * mà chứa `div#manga-chapters-holder`.
-	 * Chúng ta chỉ cần override lại selector của "Trạng thái" cho chính xác.
+	 * Chúng ta kế thừa logic của `MadaraParser` (sẽ tự động gọi `loadChapters` bằng AJAX)
+	 * nhưng bổ sung/điều chỉnh các selector cho khớp với `ifno.html`.
 	 */
-	override val selectState =
-		"div.post-content_item:has(div.summary-heading:contains(Trạng thái)) div.summary-content"
+	override val selectDesc = "div.description-summary div.summary__content"
+	override val selectState = "div.post-content_item:has(div.summary-heading:contains(Trạng thái)) div.summary-content"
+	override val selectAut = "div.author-content a" // Selector cho Tác giả
+	override val selectGenre = "div.genres-content a" // Selector cho Thể loại
+
+	override suspend fun getDetails(manga: Manga): Manga = coroutineScope {
+        // Gọi getDetails của base MadaraParser
+		val mangaDetails = super.getDetails(manga)
+
+        // Bổ sung/Fix lại các trường
+		return@coroutineScope mangaDetails.copy(
+			// Lấy rating từ selector của ifno.html
+			rating = mangaDetails.doc?.selectFirst("div.post-rating span.score")?.text()?.toFloatOrNull()?.div(5f) 
+                ?: mangaDetails.rating,
+			// Luôn đảm bảo đây là ADULT
+			contentRating = ContentRating.ADULT 
+		)
+	}
+
+	/**
+	 * Ghi đè `selectDate`:
+	 * Dùng cho logic `loadChapters` (AJAX) của base class.
+	 * `ifno.html` (khi gọi AJAX) trả về ngày tháng trong `span.chapter-release-date`
+	 * (Base class dùng `... i`, không chính xác ở đây)
+	 */
+	override val selectDate = "span.chapter-release-date"
+    
+    /**
+	 * Ghi đè `getChapters`:
+	 * Cần ghi đè vì logic `selectDate` đã thay đổi, 
+     * và logic lấy `dateText` trong base class (file 1) không còn
+     * khớp hoàn toàn (ví dụ base class có `a.c-new-tag`).
+     * Chúng ta sẽ dùng logic của base `loadChapters` (AJAX) 
+     * nhưng phải override `getChapters` (static) vì `withoutAjax = true`.
+     *
+     * *Cập nhật*: Vì `withoutAjax = true`, logic `getListPage` sẽ gọi `parseMangaList(doc)`.
+     * Logic `getDetails` của base class sẽ kiểm tra `selectTestAsync`.
+     * `ifno.html` không có `div.listing-chapters_wrap` (default của `selectTestAsync`)
+     * nên nó sẽ tự động gọi `loadChapters` (logic AJAX)
+	 */
+	override suspend fun getChapters(manga: Manga, doc: Document): List<MangaChapter> {
+        // Logic này sẽ không được gọi nếu `selectTestAsync` (div.listing-chapters_wrap) không có
+        // Tuy nhiên, base class `loadChapters` sẽ được gọi và nó dùng `selectChapter` & `selectDate`
+        // nên chúng ta chỉ cần override các selector đó là đủ.
+		return super.getChapters(manga, doc)
+	}
 
 	/**
 	 * Ghi đè `getPages`:
 	 * Selector cho từng ảnh trong trang đọc (read.html)
-	 * Base class dùng `div.page-break`, trang này dùng `div.item`.
+	 * Base class dùng `div.page-break`, trang này dùng `div.item img`.
 	 */
-	override val selectPage = "div.item"
+	override val selectPage = "div.reading-content div.item img"
 
 	/**
 	 * Ghi đè `getPages` để xử lý logic lấy ảnh.
-	 * Base `MadaraParser` dùng `flatMap` và `selectOrThrow("img")` bên trong,
-	 * logic đó vẫn đúng với selector `div.item` mới.
-	 * Tuy nhiên, `read.html` cho thấy ảnh nằm ngay trong `div.item`,
-	 * nên `selectPage` cần trỏ thẳng đến `img` sẽ tối ưu hơn.
+	 * Vì `selectPage` của chúng ta đã trỏ thẳng đến `img`, 
+     * logic `flatMap` của base class sẽ lỗi.
 	 */
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 
 		// Selector mới trỏ thẳng đến ảnh (từ read.html)
-		val pageElements = doc.select("div.reading-content div.item img")
+		val pageElements = doc.select(selectPage)
 
 		return pageElements.mapNotNull { imgElement ->
 			// Madara thường dùng 'src' trực tiếp, 'data-src' nếu lazyload
