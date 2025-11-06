@@ -39,9 +39,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
         availableStates = EnumSet.noneOf(MangaState::class.java)
     )
 
-    // =================================================================
-    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
-    // =================================================================
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildString {
             append("https://")
@@ -84,7 +81,7 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             val href = a.attrAsRelativeUrl("href")
             
             val img = a.selectFirst("img")
-            val coverUrl = img?.attrOrNull("data-src") ?: img?.attr("src")
+            val coverUrlLocal = img?.attrOrNull("data-src") ?: img?.attr("src") // Đây là String?
 
             val title = div.selectFirstOrThrow("[class*=line-clamp-2]").text()
 
@@ -96,8 +93,13 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
                 contentRating = ContentRating.ADULT,
-                // *** FIX (Lỗi 404): Chuyển URL tương đối sang tuyệt đối ***
-                coverUrl = coverUrl.toAbsoluteUrl(domain),
+                
+                // *** FIX (Lỗi L100) ***
+                // Thêm safe call (?.) và Elvis operator (?: "")
+                // 1. coverUrlLocal?.toAbsoluteUrl(domain): Chỉ gọi .toAbsoluteUrl nếu coverUrlLocal không null.
+                // 2. ?: "": Nếu kết quả là null (do coverUrlLocal bị null), trả về chuỗi rỗng.
+                coverUrl = coverUrlLocal?.toAbsoluteUrl(domain) ?: "",
+                
                 tags = setOf(),
                 state = null,
                 authors = emptySet(),
@@ -105,9 +107,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             )
         }
     }
-    // =================================================================
-    // KẾT THÚC HÀM CHỈNH SỬA
-    // =================================================================
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
