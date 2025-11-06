@@ -35,8 +35,10 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
     // =================================================================
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
-            // FIX: Xóa tham số tagInclusion/tagExclusion không tương thích API
-            isSearchSupported = true, 
+            // FIX: Sử dụng API cũ 'isMultipleTagsSupported' giống file DamCoNuong.kt
+            isSearchSupported = true,
+            isMultipleTagsSupported = true, 
+            isTagsExclusionSupported = false // Trang này không hỗ trợ loại trừ tag
         )
     // =================================================================
     // KẾT THÚC HÀM CHỈNH SỬA
@@ -76,7 +78,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
                     else -> "all"
                 }
             } else {
-                "all" // Mặc định là 'all'
+                "all"
             }
             appendParam("status=$statusValue")
 
@@ -105,7 +107,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
                 contentRating = ContentRating.ADULT,
-                coverUrl = coverUrl, // Đã tuyệt đối từ domain khác
+                coverUrl = coverUrl, 
                 tags = setOf(),
                 state = null,
                 authors = emptySet(),
