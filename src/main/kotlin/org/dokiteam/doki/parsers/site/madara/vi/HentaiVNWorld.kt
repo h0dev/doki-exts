@@ -68,15 +68,15 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 				append("https://")
 				append(domain)
 				append("/tac-gia/")
-				append(filter.author.lowercase().replace(" ", "-")) // VD: /tac-gia/shunjou-shuusuke/
+				// Thêm !! để an toàn vì đã check isNullOrEmpty
+				append(filter.author!!.lowercase().replace(" ", "-"))
 
 				if (pages > 1) {
 					append("/page/")
 					append(pages.toString())
 				}
 
-				// Sorting cho trang tác giả (nếu có)
-				append("/?m_orderby=")
+				append("/?m_orderby=") // Sắp xếp cho trang tác giả
 				when (order) {
 					SortOrder.POPULARITY -> append("views")
 					SortOrder.UPDATED -> append("latest")
@@ -89,33 +89,69 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 				return@buildString // Hoàn thành URL cho tìm kiếm tác giả
 			}
 
-			// Xử lý tìm kiếm (query) hoặc duyệt (browse)
-			append("https://")
-			append(domain)
+			// Xử lý tìm kiếm (query)
+			if (!filter.query.isNullOrEmpty()) {
+				clear()
+				append("https://")
+				append(domain)
+				
+				// Pagination cho tìm kiếm
+				if (pages > 1) {
+					append("/page/")
+					append(pages.toString())
+				}
 
-			// Pagination cho duyệt (browse)
-			if (filter.query.isNullOrEmpty() && pages > 1) {
-				append("/page/")
-				append(pages.toString())
+				append("/?s=")
+				append(filter.query.urlEncoded())
+				append("&post_type=wp-manga")
+			} else {
+				// Xử lý duyệt (browse)
+				clear()
+				append("https://")
+				append(domain)
+				append(listUrl) // Dùng listUrl = "/" (đã bao gồm /)
+
+				if (pages > 1) {
+					append("page/") // Đã có / từ listUrl
+					append(pages.toString())
+					append("/")
+				}
+				// URL param đầu tiên cho browse
+				append("?") 
 			}
 
-			// Param tìm kiếm
-			append("/?s=")
-			filter.query?.let {
-				append(it.urlEncoded())
-			}
-
-			append("&post_type=wp-manga") // Param chuẩn của Madara
-
-			// Filter thể loại (genre)
-			if (filter.tags.isNotEmpty()) {
-				filter.tags.forEach {
-					append("&genre[]=")
-					append(it.key) // key là slug, vd: 'doujinshi'
+			// Thêm sorting (nếu không phải search tác giả)
+			if (filter.author.isNullOrEmpty()) {
+				val orderKey = when (order) {
+					SortOrder.POPULARITY -> "views"
+					SortOrder.UPDATED -> "latest"
+					SortOrder.NEWEST -> "new-manga"
+					SortOrder.ALPHABETICAL -> "alphabet"
+					SortOrder.RATING -> "rating"
+					// RELEVANCE (cho search) là default, không cần thêm
+					SortOrder.RELEVANCE -> if (!filter.query.isNullOrEmpty()) "" else "latest"
+					else -> "latest"
+				}
+				
+				if (orderKey.isNotEmpty()) {
+					// Nếu là search path, nó đã có '?'. Nếu là browse path, ta vừa thêm '?'
+					if (!filter.query.isNullOrEmpty()) {
+						append("&m_orderby=")
+					} else {
+						append("m_orderby=") // Thêm ngay sau '?'
+					}
+					append(orderKey)
 				}
 			}
 
-			// Filter trạng thái (status)
+			// Thêm filters (cho cả search và browse)
+			if (filter.tags.isNotEmpty()) {
+				filter.tags.forEach {
+					append("&genre[]=")
+					append(it.key)
+				}
+			}
+
 			filter.states.forEach {
 				append("&status[]=")
 				when (it) {
@@ -128,26 +164,9 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 				}
 			}
 
-			// Sorting (dựa theo main.html)
-			append("&m_orderby=")
-			when (order) {
-				SortOrder.POPULARITY -> append("views")
-				SortOrder.UPDATED -> append("latest")
-				SortOrder.NEWEST -> append("new-manga")
-				SortOrder.ALPHABETICAL -> append("alphabet")
-				SortOrder.RATING -> append("rating")
-				SortOrder.RELEVANCE -> {} // Mặc định
-				else -> append("latest")
-			}
-
-			// Pagination cho tìm kiếm (khác với browse)
-			if (!filter.query.isNullOrEmpty() && pages > 1) {
-				append("&page=")
-				append(pages.toString())
-			}
+			// (Có thể thêm filter.contentRating, filter.year nếu cần)
 		}
-		// Phải parseMangaList(doc) chứ không phải (doc, tagMap) vì ta đang override
-		// hàm parseMangaList(doc)
+
 		return parseMangaList(webClient.httpGet(url).parseHtml())
 	}
 
@@ -185,7 +204,6 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 				rating = item.selectFirst("div.meta-item.rating span.score")?.text()?.toFloatOrNull()?.div(5f)
 					?: RATING_UNKNOWN,
 				
-				// SỬA LỖI: Đổi ContentType.HENTAI thành ContentRating.ADULT
 				contentRating = ContentRating.ADULT, 
 				
 				coverUrl = coverUrl,
@@ -203,18 +221,17 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 	/**
 	 * Ghi đè `getDetails`:
 	 * Chúng ta KHÔNG gọi super.getDetails() vì cần truy cập 'doc'
-	 * để lấy rating.
+	 * để lấy rating và các trường khác với selector đã tùy chỉnh.
 	 */
 	// Định nghĩa selector cho các trường chi tiết
 	override val selectDesc = "div.description-summary div.summary__content"
 	override val selectState = "div.post-content_item:has(div.summary-heading:contains(Trạng thái)) div.summary-content"
-	// SỬA LỖI 1: Xóa 'override' vì 'selectAut' không có trong MadaraParser base
-	val selectAut = "div.author-content a" // Selector cho Tác giả
+	// KHÔNG 'override' selectAut vì nó không có trong base MadaraParser
+	val selectAut = "div.author-content a" 
 	override val selectGenre = "div.genres-content a" // Selector cho Thể loại
 
 	override suspend fun getDetails(manga: Manga): Manga = coroutineScope {
 		val fullUrl = manga.url.toAbsoluteUrl(domain)
-		// SỬA LỖI 2: Tải 'doc' cục bộ
 		val doc = webClient.httpGet(fullUrl).parseHtml() 
 
 		val href = doc.selectFirst("head meta[property='og:url']")?.attr("content")?.toRelativeUrl(domain) ?: manga.url
@@ -235,32 +252,34 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 		val state = stateDiv?.let {
 			when (it.text().lowercase().trim()) { // Thêm .trim()
 				in ongoing, "đang tiến hành", "đang cập nhật" -> MangaState.ONGOING
-				in finished, "hoàn thành", "completed" -> MangaState.FINISHED // Thêm từ 'ifno.html'
+				in finished, "hoàn thành", "completed" -> MangaState.FINISHED
 				in abandoned -> MangaState.ABANDONED
 				in paused -> MangaState.PAUSED
 				else -> null
 			}
 		}
 
-		// HentaiVN.world (ifno.html) không có alt titles
 		val alt = doc.body().select(selectAlt).firstOrNull()?.tableValue()?.textOrNull()
 
 		// Lấy tác giả bằng selector cục bộ (đã bỏ override)
 		val authors = doc.select(selectAut).mapNotNullToSet { it.text() }
+		
+		// Lấy tags bằng selector đã override
+		val tags = doc.body().select(selectGenre).mapToSet { a -> createMangaTag(a) }.filterNotNull().toSet()
+
 
 		manga.copy(
 			title = doc.selectFirst("div.post-title h1")?.textOrNull() ?: manga.title, // Selector title 'ifno.html'
 			url = href,
 			publicUrl = href.toAbsoluteUrl(domain),
-			// Dùng selector đã override
-			tags = doc.body().select(selectGenre).mapToSet { a -> createMangaTag(a) }.filterNotNull().toSet(),
+			tags = tags,
 			description = desc,
 			altTitles = setOfNotNull(alt),
 			state = state,
 			authors = authors, // Gán tác giả đã lấy
 			chapters = chaptersDeferred.await(),
 			
-			// SỬA LỖI 2: Dùng 'doc' cục bộ để lấy rating
+			// Dùng 'doc' cục bộ để lấy rating
 			rating = doc.selectFirst("div.post-rating span.score")?.text()?.toFloatOrNull()?.div(5f) ?: RATING_UNKNOWN,
 
 			contentRating = ContentRating.ADULT // Set cứng
@@ -273,7 +292,7 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 	 * `ifno.html` (khi gọi AJAX) trả về ngày tháng trong `span.chapter-release-date`
 	 */
 	override val selectDate = "span.chapter-release-date"
-    
+
 	/**
 	 * Ghi đè `getPages`:
 	 * Selector cho từng ảnh trong trang đọc (read.html)
