@@ -77,23 +77,15 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // *** FIX ***
-        // 1. Dùng '>' (direct child) để chọn con trực tiếp của grid.
-        // 2. Dùng ':has(a[href^=/truyen/])' để chỉ chọn các 'div' chứa link truyện,
-        //    lọc bỏ hoàn toàn các div quảng cáo/placeholder.
         val itemSelector = "div.w-full.grid > div.relative.text-left.rounded-xl:has(a[href^=/truyen/])"
 
         return doc.select(itemSelector).map { div ->
-            // Thẻ <a> đầu tiên luôn là link tới truyện (và chứa ảnh)
             val a = div.selectFirstOrThrow("a[href^=/truyen/]")
             val href = a.attrAsRelativeUrl("href")
             
             val img = a.selectFirst("img")
             val coverUrl = img?.attrOrNull("data-src") ?: img?.attr("src")
 
-            // *** FIX ***
-            // Tiêu đề nằm trong thẻ <h3> hoặc <div> có class 'line-clamp-2'.
-            // Tìm trực tiếp class này là cách ổn định nhất.
             val title = div.selectFirstOrThrow("[class*=line-clamp-2]").text()
 
             Manga(
@@ -104,7 +96,8 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
                 contentRating = ContentRating.ADULT,
-                coverUrl = coverUrl.orEmpty(),
+                // *** FIX (Lỗi 404): Chuyển URL tương đối sang tuyệt đối ***
+                coverUrl = coverUrl.toAbsoluteUrl(domain),
                 tags = setOf(),
                 state = null,
                 authors = emptySet(),
@@ -183,7 +176,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             } else {
                 MangaPage(
                     id = generateUid(url),
-                    // Ảnh trên trang này dùng path relative (vd: /imgs/...), cần toAbsoluteUrl
                     url = url.toAbsoluteUrl(domain), 
                     preview = null,
                     source = source,
@@ -214,7 +206,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             
             try {
                 val now = Calendar.getInstance()
-                // Chuẩn hóa "trc" -> "trước" để parser hoạt động
                 val normalizedDate = relativeDate.replace(" trc", " trước")
                 val parts = normalizedDate.lowercase(locale).split(" ")
 
