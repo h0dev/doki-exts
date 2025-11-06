@@ -23,7 +23,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
         keys.add(userAgentKey)
     }
 
-    // Trang web sử dụng path-based sorting, chủ yếu là 'Mới Cập Nhật' và 'Phổ Biến' (mặc định)
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.POPULARITY, // Mặc định
         SortOrder.UPDATED,    // /truyen-moi-cap-nhat
@@ -33,14 +32,16 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
-            // isTagSupported sẽ được Doki tự động bật khi getFilterOptions() trả về 'availableTags'
         )
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
         availableTags = availableTags(),
-        availableStates = EnumSet.noneOf(MangaState::class.java) // Không hỗ trợ filter state
+        availableStates = EnumSet.noneOf(MangaState::class.java)
     )
 
+    // =================================================================
+    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
+    // =================================================================
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildString {
             append("https://")
@@ -54,7 +55,7 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
                     append("&page=")
                     append(page)
                 }
-                // 2. Lọc theo thể loại (từ header/info.html)
+                // 2. Lọc theo thể loại
                 filter.tags.isNotEmpty() -> {
                     append("/the-loai/")
                     append(filter.tags.first().key) // /the-loai/{key}/{page}
@@ -76,23 +77,24 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // Selector này khớp với grid item trên cả trang search, trang thể loại, và trang "Mới Cập Nhật"
-        val itemSelector = "div.w-full.grid div.relative.text-left.rounded-xl"
+        // *** FIX ***
+        // 1. Dùng '>' (direct child) để chọn con trực tiếp của grid.
+        // 2. Dùng ':has(a[href^=/truyen/])' để chỉ chọn các 'div' chứa link truyện,
+        //    lọc bỏ hoàn toàn các div quảng cáo/placeholder.
+        val itemSelector = "div.w-full.grid > div.relative.text-left.rounded-xl:has(a[href^=/truyen/])"
 
         return doc.select(itemSelector).map { div ->
-            // Thẻ <a> đầu tiên chứa link và ảnh bìa
-            val a = div.selectFirst("a[href^=/truyen/]")
-                ?: div.parseFailed("Không thể tìm thấy link manga")
-            
+            // Thẻ <a> đầu tiên luôn là link tới truyện (và chứa ảnh)
+            val a = div.selectFirstOrThrow("a[href^=/truyen/]")
             val href = a.attrAsRelativeUrl("href")
-            val img = a.selectFirst("img")
             
-            // Ưu tiên data-src (lazyload)
+            val img = a.selectFirst("img")
             val coverUrl = img?.attrOrNull("data-src") ?: img?.attr("src")
 
-            // Tiêu đề nằm ở thẻ <a> thứ hai, bên trong 1 div/h3
-            val titleElement = div.selectFirst("a[href^=/truyen/] [class*=line-clamp-2]")
-            val title = titleElement?.text() ?: "N/A"
+            // *** FIX ***
+            // Tiêu đề nằm trong thẻ <h3> hoặc <div> có class 'line-clamp-2'.
+            // Tìm trực tiếp class này là cách ổn định nhất.
+            val title = div.selectFirstOrThrow("[class*=line-clamp-2]").text()
 
             Manga(
                 id = generateUid(href),
@@ -110,19 +112,19 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             )
         }
     }
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
         
-        // Dùng helper parse ngày tương đối ("3 giờ trc", "2 ngày trc")
         val chapterDateParser = RelativeDateParser(Locale("vi"))
 
-        // Parse Tác giả, lọc "Đang Cập Nhật"
         val author = root.selectFirst("h3.text-sm:contains(Tác giả:)")
             ?.text()?.substringAfter(":")?.trim()
             ?.takeIf { it.isNotBlank() && it != "Đang Cập Nhật" }
 
-        // Parse Thể loại
         val tags = root.select("h3.text-sm:contains(Thể Loại:) a[href^='/the-loai/']").mapToSet { a ->
             MangaTag(
                 key = a.attr("href").split("/")[2], // /the-loai/drama/1 -> drama
@@ -131,10 +133,8 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             )
         }
 
-        // Parse Mô tả
         val description = root.selectFirst("p.line-clamp-4.pt-2")?.text()
 
-        // Parse danh sách chương (từ info.html)
         val chapters = root.select("div#chapter-list a").mapChapters(reversed = false) { i, a ->
             val href = a.attrAsRelativeUrl("href")
             val name = a.selectFirst("h3 div.inline-block")?.text().orEmpty()
@@ -143,26 +143,24 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             MangaChapter(
                 id = generateUid(href),
                 title = name,
-                // Thử parse số từ "Chương X", nếu thất bại dùng index
                 number = name.substringAfter("Chương ").toFloatOrNull() ?: (i + 1).toFloat(),
                 volume = 0,
                 url = href,
                 scanlator = null,
-                uploadDate = chapterDateParser.parse(dateText) ?: 0L, // 0L là "không rõ ngày"
+                uploadDate = chapterDateParser.parse(dateText) ?: 0L,
                 branch = null,
                 source = source,
             )
         }
         
-        // Suy đoán trạng thái: Nếu chương đầu tiên (mới nhất) có chữ "END" -> FINISHED
         val state = if (chapters.firstOrNull()?.title?.contains("END", ignoreCase = true) == true) {
             MangaState.FINISHED
         } else {
-            MangaState.ONGOING // Ngược lại thì là ONGOING
+            MangaState.ONGOING
         }
 
         return manga.copy(
-            altTitles = emptySet(), // Không thấy tên khác
+            altTitles = emptySet(),
             state = state,
             tags = tags,
             authors = setOfNotNull(author),
@@ -175,20 +173,18 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
 
-        // Chọn tất cả ảnh trong khu vực đọc (từ read.html)
         val imageElements = doc.select("div.w-full.flex.flex-col.items-center div[class*=max-w] img")
 
         return imageElements.mapNotNull { img ->
-            // Ưu tiên data-src (lazyload)
             val url = img.attrOrNull("data-src") ?: img.attr("src")
 
-            // Lọc các ảnh placeholder của trang
             if (url.endsWith("loading.webp") || url.contains("/page_logo.png")) {
                 null
             } else {
                 MangaPage(
                     id = generateUid(url),
-                    url = url.toAbsoluteUrl(domain), // Các URL ảnh là relative (vd: /imgs/...)
+                    // Ảnh trên trang này dùng path relative (vd: /imgs/...), cần toAbsoluteUrl
+                    url = url.toAbsoluteUrl(domain), 
                     preview = null,
                     source = source,
                 )
@@ -197,7 +193,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
     }
 
     private suspend fun availableTags(): Set<MangaTag> {
-        // Lấy tags từ dropdown menu ở trang chủ (main.html)
         val url = "https://$domain/"
         val doc = webClient.httpGet(url).parseHtml()
 
@@ -212,7 +207,6 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
 
     /**
      * Helper class để parse các chuỗi ngày tương đối (VD: "3 giờ trc", "2 ngày trc")
-     * (Tái sử dụng từ MeHentai parser)
      */
     private class RelativeDateParser(private val locale: Locale) {
         fun parse(relativeDate: String?): Long? {
@@ -220,7 +214,7 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
             
             try {
                 val now = Calendar.getInstance()
-                // Chuẩn hóa "tháng trc", "ngày trc" -> "tháng trước", "ngày trước"
+                // Chuẩn hóa "trc" -> "trước" để parser hoạt động
                 val normalizedDate = relativeDate.replace(" trc", " trước")
                 val parts = normalizedDate.lowercase(locale).split(" ")
 
