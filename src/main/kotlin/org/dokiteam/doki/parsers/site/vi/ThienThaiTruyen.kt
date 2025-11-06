@@ -35,11 +35,12 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
     // =================================================================
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
-            isSearchSupported = true,
-            // FIX: Đổi lại thành MULTIPLE, vì trang hỗ trợ nhiều tag
-            tagInclusion = MangaListFilter.TagInclusion.MULTIPLE,
-            tagExclusion = MangaListFilter.TagExclusion.UNSUPPORTED
+            // FIX: Xóa tham số tagInclusion/tagExclusion không tương thích API
+            isSearchSupported = true, 
         )
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
         availableTags = availableTags(),
@@ -80,7 +81,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             appendParam("status=$statusValue")
 
             // 5. Tags (Genres)
-            // FIX: Lấy tất cả key của tag và nối chúng bằng dấu gạch dưới "_"
+            // Nối nhiều tag bằng dấu "_"
             if (filter.tags.isNotEmpty()) {
                 val tagsQuery = filter.tags.joinToString("_") { it.key }
                 appendParam("genres=$tagsQuery")
@@ -88,8 +89,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }
 
         val doc = webClient.httpGet(url).parseHtml()
-
-        // Selector này khớp với search.html và main.html
+        
         val itemSelector = "div.grid.grid-cols-3.md\\:grid-cols-5 > a[href^='https://thienthaitruyen.com/truyen-tranh/']"
 
         return doc.select(itemSelector).map { a ->
@@ -113,9 +113,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             )
         }
     }
-    // =================================================================
-    // KẾT THÚC HÀM CHỈNH SỬA
-    // =================================================================
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
