@@ -9,7 +9,6 @@ import org.dokiteam.doki.parsers.model.*
 import org.dokiteam.doki.parsers.util.*
 import java.util.*
 
-// Giả định MangaParserSource.THIENTHAITRUYEN đã tồn tại trong enum
 @MangaSourceParser("THIENTHAITRUYEN", "Thiên Thai Truyện", "vi", type = ContentType.HENTAI)
 internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.THIENTHAITRUYEN, 60) {
 
@@ -31,13 +30,19 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         SortOrder.ALPHABETICAL_DESC // name_desc
     )
 
+    // =================================================================
+    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
+    // =================================================================
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
+            // FIX: Đổi lại thành MULTIPLE, vì trang hỗ trợ nhiều tag
+            tagInclusion = MangaListFilter.TagInclusion.MULTIPLE,
+            tagExclusion = MangaListFilter.TagExclusion.UNSUPPORTED
         )
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
-        availableTags = availableTags(), // Sẽ gọi hàm đã sửa
+        availableTags = availableTags(),
         availableStates = EnumSet.of(MangaState.ONGOING, MangaState.FINISHED)
     )
 
@@ -63,23 +68,22 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             appendParam("sort=$sortValue")
 
             // 4. Status
-            if (filter.states.isNotEmpty()) {
-                val statusValue = when (filter.states.first()) {
+            val statusValue = if (filter.states.isNotEmpty()) {
+                when (filter.states.first()) {
                     MangaState.ONGOING -> "ongoing"
                     MangaState.FINISHED -> "completed"
-                    else -> ""
-                }
-                if (statusValue.isNotEmpty()) {
-                    appendParam("status=$statusValue")
+                    else -> "all"
                 }
             } else {
-                // Trang web yêu cầu "status=all" làm mặc định
-                appendParam("status=all")
+                "all" // Mặc định là 'all'
             }
+            appendParam("status=$statusValue")
 
             // 5. Tags (Genres)
-            filter.tags.forEach {
-                appendParam("genres[]=${it.key}")
+            // FIX: Lấy tất cả key của tag và nối chúng bằng dấu gạch dưới "_"
+            if (filter.tags.isNotEmpty()) {
+                val tagsQuery = filter.tags.joinToString("_") { it.key }
+                appendParam("genres=$tagsQuery")
             }
         }
 
@@ -109,6 +113,9 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             )
         }
     }
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
@@ -188,15 +195,10 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }
     }
 
-    // =================================================================
-    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
-    // =================================================================
     private suspend fun availableTags(): Set<MangaTag> {
-        // FIX: Tải tags từ trang tìm kiếm (search.html) theo yêu cầu
         val url = "https://$domain/tim-kiem-nang-cao"
         val doc = webClient.httpGet(url).parseHtml()
 
-        // FIX: Dùng selector bạn đã cung cấp
         val genreContainer = doc.selectFirst("#genres-filter div.filter-dropdown-container")
             ?: return emptySet()
 
@@ -216,9 +218,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
         }.toSet()
     }
-    // =================================================================
-    // KẾT THÚC HÀM CHỈNH SỬA
-    // =================================================================
 
     /**
      * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
