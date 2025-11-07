@@ -15,7 +15,6 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
 
     override val configKeyDomain = ConfigKey.Domain("truyenhentaiz.net")
 
-    // Sử dụng suspendLazy để cache lại danh sách tag
     private val availableTags = suspendLazy(initializer = ::fetchTags)
 
     override fun getRequestHeaders(): Headers = Headers.Builder()
@@ -27,65 +26,78 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
         keys.add(userAgentKey)
     }
 
-    // Dựa trên UI (Mới cập nhật, Phổ biến (Xem nhiều nhất))
+    // =================================================================
+    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
+    // =================================================================
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
-        SortOrder.UPDATED,
-        SortOrder.POPULARITY
+        SortOrder.UPDATED,      // /moi-cap-nhat (Mặc định)
+        SortOrder.POPULARITY,   // /xem-nhieu-nhat
+        SortOrder.NEWEST        // /truyen-moi
+        // Trang 'Đề cử' (/de-cu) sẽ không được gán vào sort order cụ thể,
+        // nhưng vẫn có thể truy cập nếu logic getListPage xử lý (đã bỏ)
     )
 
-    // Sử dụng API Doki cũ (giống DamCoNuong)
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
-            isMultipleTagsSupported = false, // Trang này không hỗ trợ lọc nhiều tag, chỉ 1 tag 1 lần
+            // FIX: Tắt hỗ trợ multi-tag theo yêu cầu
+            isMultipleTagsSupported = false, 
             isTagsExclusionSupported = false
         )
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
-        availableTags = availableTags.get(), // Lấy tag từ lazy loader
-        availableStates = EnumSet.noneOf(MangaState::class.java) // Không hỗ trợ lọc theo trạng thái
+        availableTags = availableTags.get(),
+        availableStates = EnumSet.noneOf(MangaState::class.java)
     )
 
+    // =================================================================
+    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
+    // =================================================================
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildString {
             append("https://")
             append(domain)
 
             when {
-                // 1. Ưu tiên tìm kiếm (từ truyenhentaiz.net__s_g.html)
+                // 1. Ưu tiên tìm kiếm
                 !filter.query.isNullOrEmpty() -> {
                     append("/page/$page?s=${filter.query.urlEncoded()}")
                 }
                 
-                // 2. Lọc theo thể loại (chỉ hỗ trợ 1 tag)
+                // 2. Lọc theo thể loại (Đã tắt multi-tag)
                 filter.tags.isNotEmpty() -> {
                     append("/category/${filter.tags.first().key}/page/$page")
                 }
 
-                // 3. Sắp xếp
-                order == SortOrder.POPULARITY -> {
-                    append("/xem-nhieu-nhat/page/$page")
-                }
-
-                // 4. Mặc định (Mới cập nhật - từ truyenhentaiz.net.html)
+                // 3. Sắp xếp (Trang danh sách)
                 else -> {
-                    append("/moi-cap-nhat/page/$page")
+                    when (order) {
+                        SortOrder.POPULARITY -> append("/xem-nhieu-nhat/page/$page")
+                        SortOrder.NEWEST -> append("/truyen-moi/page/$page")
+                        // FIX: Mặc định (UPDATED) trỏ về /moi-cap-nhat
+                        else -> append("/moi-cap-nhat/page/$page") 
+                    }
                 }
             }
         }
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // Selector chung cho trang chủ, tìm kiếm, thể loại
         val itemSelector = "div.col[class*=item-]"
 
-        return doc.select(itemSelector).map { element ->
-            val a = element.selectFirstOrThrow("a[href*='.html']")
+        return doc.select(itemSelector).mapNotNull { element ->
+            val a = element.selectFirst("a[href*='.html']")
+            if (a == null) {
+                return@mapNotNull null
+            }
+
             val href = a.attrAsRelativeUrl("href")
             
-            // Ưu tiên data-src (lazy load), fallback về src
-            val img = a.selectFirstOrThrow("img.card-img-top")
-            val coverUrl = img.attrOrNull("data-src") ?: img.attr("src")
+            val img = a.selectFirst("img.card-img-top")
+            val coverUrl = img?.attrOrNull("data-src") ?: img?.attr("src")
 
             Manga(
                 id = generateUid(href),
@@ -94,8 +106,8 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
                 url = href,
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
-                contentRating = ContentRating.ADULT,
-                coverUrl = coverUrl.toAbsoluteUrl(domain), // Ảnh đã là URL tuyệt đối
+                contentRating = ContentType.HENTAI.toContentRating(), // Đảm bảo đúng loại
+                coverUrl = coverUrl.toAbsoluteUrl(domain),
                 tags = setOf(),
                 state = null,
                 authors = emptySet(),
@@ -103,27 +115,26 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
             )
         }
     }
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-        val chapterDateParser = RelativeDateParser(Locale("vi")) // Dùng lại parser từ ThienThaiTruyen
+        val chapterDateParser = RelativeDateParser(Locale("vi"))
 
-        // Tên khác
         val altTitles = root.selectFirst("p.other-name-container span.other-name")
             ?.text()?.split("/")?.map { it.trim() }?.toSet() ?: emptySet()
 
-        // Tác giả / Doujinshi
         val author = root.selectFirst("div.manga-info span:has(i.bi-journal-bookmark-fill) a")?.text()
 
-        // Trạng thái
         val statusText = root.selectFirst("div.manga-info span:has(i.bi-arrow-clockwise) strong")?.text()
         val state = when (statusText) {
             "FULL" -> MangaState.FINISHED
-            "Đang cập nhật" -> MangaState.ONGOING // Giả định
+            "Đang cập nhật" -> MangaState.ONGOING
             else -> null
         }
 
-        // Thể loại
         val tags = root.select("div.categories a[href*='/category/']").mapToSet { a ->
             MangaTag(
                 key = a.attr("href").substringAfterLast('/'),
@@ -132,16 +143,14 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
             )
         }
 
-        // Mô tả
         val description = root.selectFirst("p.mt-2.card-text.desc")?.text()
 
-        // Danh sách chương
         val chapters = root.select("ul.list-group.list-chapters li.list-group-item")
-            .mapChapters(reversed = true) { i, li -> // List trên web là từ mới -> cũ
+            .mapChapters(reversed = true) { i, li ->
                 val a = li.selectFirstOrThrow("a")
                 val href = a.attrAsRelativeUrl("href")
                 val name = a.selectFirst("span.fw-bold")?.text().orEmpty()
-                val dateText = li.selectFirst("em")?.text() // "23 giờ trước"
+                val dateText = li.selectFirst("em")?.text()
 
                 MangaChapter(
                     id = generateUid(href),
@@ -149,7 +158,7 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
                     number = name.substringAfter("Chapter ").toFloatOrNull() ?: (i + 1).toFloat(),
                     volume = 0,
                     url = href,
-                    scanlator = null, // Không thấy thông tin scanlator
+                    scanlator = null,
                     uploadDate = chapterDateParser.parse(dateText) ?: 0L,
                     branch = null,
                     source = source,
@@ -170,23 +179,19 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
 
-        // Selector dựa trên ...chapter-1.html.html
         val imageElements = doc.select("div#chapter-content img[decoding=async]")
 
         return imageElements.map { img ->
             val url = img.attr("src")
             MangaPage(
                 id = generateUid(url),
-                url = url, // URL đã là tuyệt đối (từ cdn2.tymanga.com)
+                url = url,
                 preview = null,
                 source = source,
             )
         }
     }
 
-    /**
-     * Lấy danh sách tag từ sidebar trang chủ
-     */
     private suspend fun fetchTags(): Set<MangaTag> {
         val url = "https://$domain/"
         val doc = webClient.httpGet(url).parseHtml()
@@ -207,7 +212,7 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
     }
 
     /**
-     * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
+     * Helper class để parse các chuỗi ngày tương đối (VD: "23 giờ trước")
      */
     private class RelativeDateParser(private val locale: Locale) {
         fun parse(relativeDate: String?): Long? {
@@ -215,13 +220,12 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
             
             try {
                 val now = Calendar.getInstance()
-                // Trang này dùng "trước" (vd: "22 giờ trước")
                 val parts = relativeDate.lowercase(locale).split(" ")
 
                 if (parts.size < 2) return null
 
                 val amount = parts[0].toIntOrNull() ?: return null
-                val unit = parts[1]
+                val unit = parts[1] // "giờ", "ngày", "phút"...
 
                 when (unit) {
                     "giây" -> now.add(Calendar.SECOND, -amount)
