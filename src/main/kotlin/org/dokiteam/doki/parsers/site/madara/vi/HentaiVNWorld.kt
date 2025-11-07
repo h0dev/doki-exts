@@ -3,6 +3,7 @@ package org.dokiteam.doki.parsers.site.madara.vi
 import androidx.collection.ArrayMap
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import okhttp3.Headers // Import Headers
 import org.jsoup.nodes.Document
 import org.dokiteam.doki.parsers.MangaLoaderContext
 import org.dokiteam.doki.parsers.MangaSourceParser
@@ -27,6 +28,15 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 	override val datePattern = "dd/MM/yyyy"
 	override val authorSearchSupported = true
 	override val withoutAjax = true
+
+	/**
+	 * Thêm Referer header
+	 * Thêm Referer để bypass hotlink protection (anti-leech)
+	 * khi tải ảnh từ CDN (vd: cdn.hentaicube.xyz).
+	 */
+	override fun getRequestHeaders(): Headers = super.getRequestHeaders().newBuilder()
+		.add("Referer", "https://".plus(domain).plus("/"))
+		.build()
 
 	/**
 	 * Ghi đè `getListPage` để xây dựng URL theo kiểu không-AJAX (withoutAjax = true).
@@ -148,17 +158,16 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 			val slug = absUrl.removeSuffix("/").substringAfterLast('/')
 			val coverImg = item.selectFirst("div.item-thumb a img")
 			
-			// SỬA LỖI: Dùng toAbsoluteUrl thay vì toRelativeUrl
+			// SỬA LỖI: Bỏ .replace(" ", "%20")
 			val coverUrl = (coverImg?.attr("data-src") ?: coverImg?.attr("src"))
-				?.trim()
-				?.replace(" ", "%20")
+				?.trim() // Vẫn giữ trim()
 				?.toAbsoluteUrl(domain).orEmpty() // Đảm bảo URL tuyệt đối
 
 			Manga(
 				id = generateUid(slug),
 				title = titleAnchor.text(),
 				altTitles = emptySet(),
-				url = absUrl.toRelativeUrl(domain), // URL nội bộ của app vẫn là relative
+				url = absUrl.toRelativeUrl(domain), 
 				publicUrl = absUrl,
 				rating = item.selectFirst("div.meta-item.rating span.score")?.text()?.toFloatOrNull()?.div(5f)
 					?: RATING_UNKNOWN,
@@ -241,14 +250,13 @@ internal class HentaiVNWorld(context: MangaLoaderContext) :
 	 */
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
-		val doc = webClient.httpGet(fullUrl).parseHtml()
+		val doc = webClient.httpGet(fullUrl).parseHtml() 
 
 		val pageElements = doc.select(selectPage)
 
 		return pageElements.mapNotNull { imgElement ->
-			// SỬA LỖI: Dùng toAbsoluteUrl thay vì toRelativeUrl
+			// SỬA LỖI: Bỏ .replace(" ", "%20")
 			val imgUrl = (imgElement.attr("data-src")?.trim() ?: imgElement.attr("src")?.trim())
-				?.replace(" ", "%20")
 				?.toAbsoluteUrl(domain) // Đảm bảo URL tuyệt đối
 
 			if (imgUrl.isNullOrEmpty()) {
