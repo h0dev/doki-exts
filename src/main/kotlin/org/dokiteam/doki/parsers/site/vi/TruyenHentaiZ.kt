@@ -25,37 +25,25 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
         super.onCreateConfig(keys)
         keys.add(userAgentKey)
     }
-
-    // =================================================================
-    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
-    // =================================================================
+    
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.UPDATED,      // /moi-cap-nhat (Mặc định)
         SortOrder.POPULARITY,   // /xem-nhieu-nhat
         SortOrder.NEWEST        // /truyen-moi
-        // Trang 'Đề cử' (/de-cu) sẽ không được gán vào sort order cụ thể,
-        // nhưng vẫn có thể truy cập nếu logic getListPage xử lý (đã bỏ)
     )
 
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
-            // FIX: Tắt hỗ trợ multi-tag theo yêu cầu
-            isMultipleTagsSupported = false, 
+            isMultipleTagsSupported = false, // Chỉ hỗ trợ 1 tag
             isTagsExclusionSupported = false
         )
-    // =================================================================
-    // KẾT THÚC HÀM CHỈNH SỬA
-    // =================================================================
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
         availableTags = availableTags.get(),
         availableStates = EnumSet.noneOf(MangaState::class.java)
     )
 
-    // =================================================================
-    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
-    // =================================================================
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildString {
             append("https://")
@@ -67,7 +55,7 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
                     append("/page/$page?s=${filter.query.urlEncoded()}")
                 }
                 
-                // 2. Lọc theo thể loại (Đã tắt multi-tag)
+                // 2. Lọc theo thể loại
                 filter.tags.isNotEmpty() -> {
                     append("/category/${filter.tags.first().key}/page/$page")
                 }
@@ -77,7 +65,7 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
                     when (order) {
                         SortOrder.POPULARITY -> append("/xem-nhieu-nhat/page/$page")
                         SortOrder.NEWEST -> append("/truyen-moi/page/$page")
-                        // FIX: Mặc định (UPDATED) trỏ về /moi-cap-nhat
+                        // Mặc định (UPDATED) trỏ về /moi-cap-nhat
                         else -> append("/moi-cap-nhat/page/$page") 
                     }
                 }
@@ -97,7 +85,7 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
             val href = a.attrAsRelativeUrl("href")
             
             val img = a.selectFirst("img.card-img-top")
-            val coverUrl = img?.attrOrNull("data-src") ?: img?.attr("src")
+            val coverUrlLocal = img?.attrOrNull("data-src") ?: img?.attr("src") // Đây là String?
 
             Manga(
                 id = generateUid(href),
@@ -106,8 +94,10 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
                 url = href,
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
-                contentRating = ContentType.HENTAI.toContentRating(), // Đảm bảo đúng loại
-                coverUrl = coverUrl.toAbsoluteUrl(domain),
+                // FIX 1 (L109): Thay thế 'toContentRating()' bằng gán trực tiếp
+                contentRating = ContentRating.ADULT,
+                // FIX 2 (L110): Thêm 'safe call' (?.) và elvis (?: "")
+                coverUrl = coverUrlLocal?.toAbsoluteUrl(domain) ?: "",
                 tags = setOf(),
                 state = null,
                 authors = emptySet(),
@@ -115,9 +105,6 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
             )
         }
     }
-    // =================================================================
-    // KẾT THÚC HÀM CHỈNH SỬA
-    // =================================================================
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
