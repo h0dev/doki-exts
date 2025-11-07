@@ -7,7 +7,7 @@ import org.dokiteam.doki.parsers.config.ConfigKey
 import org.dokiteam.doki.parsers.core.PagedMangaParser
 import org.dokiteam.doki.parsers.model.*
 import org.dokiteam.doki.parsers.util.*
-import org.dokiteam.doki.parsers.util.suspendlazy.suspendLazy
+import org.dokiteam.doki.parsers.util.suspendlazy.suspendLazy // Đảm bảo đã import
 import java.util.*
 
 @MangaSourceParser("LANHLUNGTEAM", "Lạnh Lùng Team", "vi", type = ContentType.HENTAI)
@@ -15,6 +15,7 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
 
     override val configKeyDomain = ConfigKey.Domain("lanhlungteam.com")
 
+    // Sử dụng suspendLazy để cache lại danh sách tag
     private val availableTags = suspendLazy(initializer = ::fetchTags)
 
     override fun getRequestHeaders(): Headers = Headers.Builder()
@@ -28,7 +29,7 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
 
     // Dựa trên 'tim-kiem-nang-cao...html'
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
-        SortOrder.UPDATED,      // update
+        SortOrder.UPDATED,      // update (Mặc định)
         SortOrder.POPULARITY,   // view
         SortOrder.ALPHABETICAL, // namea-z
         SortOrder.ALPHABETICAL_DESC // namez-a
@@ -50,7 +51,7 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = buildString {
-            // Trang chủ và tìm kiếm đều dùng endpoint này
+            // Endpoint chính cho cả tìm kiếm, lọc, và trang chủ
             append("https://$domain/tim-kiem-nang-cao")
 
             // 1. Page
@@ -66,7 +67,7 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
                 }
             )
 
-            // 3. Query
+            // 3. Query (Keyword)
             if (!filter.query.isNullOrEmpty()) {
                 appendParam("keyword=${filter.query.urlEncoded()}")
             }
@@ -92,10 +93,12 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // Selector dựa trên 'main.html' và 'tim-kiem...html'
+        // *** FIX 1 (List truyện): Dùng selector 'div.comic-item' ***
+        // (Selector này chung cho cả main.html và tim-kiem-nang-cao.html)
         val itemSelector = "div.comic-item"
 
         return doc.select(itemSelector).mapNotNull { element ->
+            // Link và tiêu đề nằm trong <h3>
             val a = element.selectFirst("h3.comic-title > a")
             if (a == null) {
                 // Bỏ qua item không hợp lệ (ví dụ: quảng cáo)
@@ -105,7 +108,7 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
             val href = a.attrAsRelativeUrl("href")
             val img = element.selectFirst("div.comic-image img")
             
-            // Ưu tiên data-src (lazy load)
+            // Ưu tiên data-src (lazy load), fallback về src
             val coverUrlLocal = img?.attrOrNull("data-src") ?: img?.attr("src")
 
             Manga(
@@ -116,7 +119,8 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
                 contentRating = ContentRating.ADULT,
-                coverUrl = coverUrlLocal?.toAbsoluteUrl(domain) ?: "",
+                // Xử lý null-safety cho coverUrl
+                coverUrl = coverUrlLocal?.toAbsoluteUrl(domain) ?: "", 
                 tags = setOf(),
                 state = null,
                 authors = emptySet(),
@@ -127,7 +131,7 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-        val chapterDateParser = RelativeDateParser(Locale("vi"))
+        val chapterDateParser = RelativeDateParser(Locale("vi")) // Tái sử dụng helper
 
         // Tên khác
         val altTitles = root.select("div.other-name > p.other-name-item").mapToSet { it.text() }
@@ -160,13 +164,12 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
             .mapChapters(reversed = true) { i, li -> // List trên web là từ mới -> cũ
                 val a = li.selectFirstOrThrow("a.chapter-link")
                 val href = a.attrAsRelativeUrl("href")
-                val name = a.attr("title").ifEmpty { a.text() } // Ưu tiên title, fallback về text
+                val name = a.attr("title").ifEmpty { a.text() } // Ưu tiên title
                 val dateText = li.selectFirst("span.chapter-time")?.text() // "13 giờ trước"
 
                 MangaChapter(
                     id = generateUid(href),
                     title = name,
-                    // Thử parse số từ "Chương X"
                     number = name.substringAfter("Chương ").toFloatOrNull() ?: (i + 1).toFloat(),
                     volume = 0,
                     url = href,
@@ -209,11 +212,12 @@ internal class LanhLungTeam(context: MangaLoaderContext) : PagedMangaParser(cont
      * Lấy danh sách tag từ trang tìm kiếm nâng cao
      */
     private suspend fun fetchTags(): Set<MangaTag> {
+        // *** FIX 2 (Tag): Tải trang tim-kiem-nang-cao ***
         val url = "https://$domain/tim-kiem-nang-cao"
         val doc = webClient.httpGet(url).parseHtml()
 
-        // Selector dựa trên 'tim-kiem-nang-cao...html'
-        return doc.select("div.comic-filter-item-wrapper > label.comic-filter-item").mapNotNullToSet { label ->
+        // *** FIX 2 (Tag): Dùng selector chính xác ***
+        return doc.select("div.comic-filter-item-wrapper label.comic-filter-item").mapNotNullToSet { label ->
             val input = label.selectFirst("input[name='genre[]']")
             val title = label.selectFirst("span")?.text()
             val key = input?.attr("value") // e.g., "2"
