@@ -74,6 +74,7 @@ internal abstract class YuriGardenParser(
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
 		val url = buildString {
+			// ... (logic buildString không đổi)
 			append("https://")
 			append(apiSuffix)
 			append("/comics")
@@ -147,14 +148,30 @@ internal abstract class YuriGardenParser(
 				}
 			}.orEmpty()
 
+			// === BẮT ĐẦU CHỈNH SỬA THUMBNAIL (Lần 2) ===
+			
+			// Lấy giá trị thumbnail từ JSON
+			val thumbnailValue = jo.getString("thumbnail")
+
+			// Kiểm tra xem thumbnailValue là URL đầy đủ hay đường dẫn tương đối
+			val coverUrl = if (thumbnailValue.startsWith("http")) {
+				// Trường hợp 1: Đã là URL đầy đủ (ví dụ id 93)
+				thumbnailValue
+			} else {
+				// Trường hợp 2: Là đường dẫn tương đối (ví dụ id 902)
+				// Xây dựng URL, logic này tương tự như trong getPages
+				"https://$cdnSuffix/$thumbnailValue"
+			}
+			// === KẾT THÚC CHỈNH SỬA ===
+
 			Manga(
 				id = generateUid(id),
 				url = "/comics/$id",
 				publicUrl = "https://$domain/comic/$id",
 				title = jo.getString("title"),
 				altTitles = altTitles,
-				coverUrl = jo.getString("thumbnail"),
-				largeCoverUrl = jo.getString("thumbnail"),
+				coverUrl = coverUrl, // <-- Sử dụng URL đã xử lý
+				largeCoverUrl = coverUrl, // <-- Sử dụng URL đã xử lý
 				authors = emptySet(),
 				tags = tags,
 				state = when(jo.optString("status")) {
