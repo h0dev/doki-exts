@@ -86,28 +86,34 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // FIX: Thay vì tìm theo class grid cụ thể, tìm trực tiếp class "thumb-cover"
-        // Đây là class bao quanh ảnh bìa của mỗi truyện
-        val elements = doc.select("div.thumb-cover")
+        // FIX: Selector quát rộng hơn để bắt được items trong mọi loại Grid (2 cột, 4 cột, 5 cột...)
+        // Tìm tất cả các div nằm trực tiếp trong một grid container
+        val itemElements = doc.select("div.grid > div")
 
-        return elements.mapNotNull { thumb ->
-            // Link truyện nằm trong thẻ a bên trong thumb-cover
-            val linkNode = thumb.selectFirst("a") ?: return@mapNotNull null
-            val href = linkNode.attrAsRelativeUrl("href")
-            val coverUrl = thumb.selectFirst("img")?.attr("src") ?: ""
+        return itemElements.mapNotNull { div ->
+            // Tìm link truyện (ưu tiên link chứa ảnh)
+            // Selector này tìm thẻ 'a' có href chứa /truyen-tranh/ VÀ bên trong có thẻ 'img'
+            val coverLink = div.selectFirst("a[href*='/truyen-tranh/']:has(img)") 
+                ?: return@mapNotNull null // Nếu không có ảnh bìa -> bỏ qua (có thể là quảng cáo hoặc header)
 
-            // Lấy tiêu đề:
-            // Tiêu đề thường nằm ở thẻ cha của thumb-cover -> tìm xuống các thẻ text
-            // Ưu tiên tìm h3, sau đó tìm thẻ a có class text (cho giao diện mobile/list)
-            val container = thumb.parent()
-            val titleNode = container?.selectFirst("h3, div[class*='text-'] > a, span.font-medium")
-            
-            // Fallback: Lấy title từ attribute của ảnh hoặc link nếu không tìm thấy text
-            val title = titleNode?.text()?.trim() 
-                ?: thumb.selectFirst("img")?.attr("alt")?.substringAfter("truyện ") // Remove prefix nếu có
-                ?: linkNode.attr("title")
+            val href = coverLink.attrAsRelativeUrl("href")
+            val coverUrl = coverLink.selectFirst("img")?.attr("src") ?: ""
 
-            if (title.isNullOrBlank()) return@mapNotNull null
+            // Tìm tiêu đề
+            // 1. Tìm thẻ text ở bên dưới (thường là sibling của cover wrapper)
+            // 2. Nếu không thấy, lấy từ attribute 'title' của thẻ a
+            // 3. Nếu không thấy, lấy từ 'alt' của ảnh
+            val titleElement = div.selectFirst("div a[href*='/truyen-tranh/']:not(:has(img))") 
+                ?: div.selectFirst("h3 a") 
+                ?: div.selectFirst("span.font-medium")
+
+            val title = titleElement?.text()?.trim() 
+                ?: coverLink.attr("title").trim().takeIf { it.isNotEmpty() }
+                ?: coverLink.selectFirst("img")?.attr("alt")?.replace("truyện tranh ", "", true)?.trim()
+                ?: ""
+
+            // Loại bỏ các item rác không có tiêu đề hoặc link hỏng
+            if (title.isBlank() || href.contains("/chuong-")) return@mapNotNull null
 
             Manga(
                 id = generateUid(href),
@@ -119,27 +125,24 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
                 contentRating = ContentRating.ADULT,
                 coverUrl = coverUrl,
                 tags = setOf(),
-                state = null, // Có thể update logic check trạng thái nếu cần
+                state = null,
                 authors = emptySet(),
                 source = source,
             )
-        }
+        }.distinctBy { it.url } // Loại bỏ trùng lặp nếu parser quét trúng 1 truyện nhiều lần
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-        
-        // Sử dụng parser thông minh hỗ trợ nhiều định dạng ngày
         val dateParser = SmartDateParser(Locale("vi"))
 
-        // Tìm mô tả (thường nằm trong thẻ p có class comic-content)
+        // Selector Description (cố gắng tìm class phổ biến hoặc thẻ p chứa nội dung)
         val description = root.selectFirst("p.comic-content")?.text()?.trim()
+            ?: root.selectFirst("div.detail-content p")?.text()?.trim()
 
-        // Tìm tác giả: Tìm div chứa text "Tác giả", sau đó lấy thẻ p.text-sm bên cạnh
-        val author = root.selectFirst("div:contains(Tác giả) + div p.text-sm, div:contains(Tác giả) p.text-sm")
+        val author = root.selectFirst("div:contains(Tác giả) p.text-sm")
             ?.text()?.takeIf { it.trim() != "Đang cập nhật" }
 
-        // Tìm trạng thái
         val statusText = root.selectFirst("div:contains(Trạng thái) p.text-sm")?.text()
         val state = when (statusText) {
             "Đang ra" -> MangaState.ONGOING
@@ -147,7 +150,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             else -> MangaState.ONGOING
         }
 
-        // Tags
         val tags = root.select("div.space-y-1 a[href*='/the-loai/']").mapToSet { a ->
             MangaTag(
                 key = a.attr("href").substringAfterLast('/'),
@@ -156,16 +158,11 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             )
         }
 
-        // Chapters
         val chapters = root.select("div.chapter-items")
             .mapChapters(reversed = true) { i, item ->
                 val a = item.selectFirstOrThrow("a")
                 val href = a.attrAsRelativeUrl("href")
-                
-                // Tên chương
                 val name = a.selectFirst("p.text-sm")?.text()?.trim() ?: "Chapter ${i + 1}"
-                
-                // Ngày đăng
                 val dateText = a.selectFirst("p.text-xs span")?.text()?.trim()
 
                 MangaChapter(
@@ -195,17 +192,17 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
 
-        // Selector ảnh: Tìm trong div center hoặc container chính
+        // Tìm container chứa ảnh: div có class 'py-8' và bên trong có 'flex-col items-center'
         val container = doc.selectFirst("div.py-8 div.flex.flex-col.items-center") 
-            ?: doc.selectFirst("div.py-8 div.w-full.mx-auto")
+            ?: doc.selectFirst("div.py-8 div.w-full.mx-auto") // Fallback cho layout cũ
 
         val imageElements = container?.select("img") ?: return emptyList()
 
         return imageElements.mapNotNull { img ->
-            // Ưu tiên lấy src, nếu rỗng thì lấy data-src (lazy load)
+            // Lấy src, nếu lazyload thì lấy data-src
             val url = img.attr("src").ifEmpty { img.attr("data-src") }
             
-            // Lọc bỏ ảnh rác (loading, banner, logo)
+            // Filter ảnh rác
             if (url.isBlank() || 
                 url.contains("thumb-loading.gif") || 
                 url.contains("thienthaitruyen-truyen-tranh-hentai.png")
@@ -253,29 +250,20 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
     }
 
     private class SmartDateParser(private val locale: Locale) {
-        // Format cứng cho trường hợp "19/06/2024"
         private val dateFormat = SimpleDateFormat("dd/MM/yyyy", locale)
 
         fun parse(dateString: String?): Long? {
             if (dateString.isNullOrBlank()) return null
             
             val cleanDate = dateString.trim()
-
-            // 1. Thử parse dạng ngày tháng cụ thể (dd/MM/yyyy)
             try {
                 if (cleanDate.contains("/")) {
                     return dateFormat.parse(cleanDate)?.time
                 }
-            } catch (_: Exception) {}
-
-            // 2. Thử parse dạng tương đối (vừa xong, 2 giờ trước...)
-            try {
                 val now = Calendar.getInstance()
                 val parts = cleanDate.lowercase(locale).split(" ")
                 
-                // Xử lý "Vừa xong" hoặc tương tự
                 if (cleanDate.contains("vừa") || cleanDate.contains("now")) return now.timeInMillis
-
                 if (parts.size < 2) return null
 
                 val amount = parts[0].toIntOrNull() ?: return null
