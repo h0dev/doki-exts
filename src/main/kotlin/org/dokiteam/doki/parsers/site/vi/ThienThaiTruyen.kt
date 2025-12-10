@@ -12,7 +12,8 @@ import java.util.*
 @MangaSourceParser("THIENTHAITRUYEN", "Thiên Thai Truyện", "vi", type = ContentType.HENTAI)
 internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.THIENTHAITRUYEN, 60) {
 
-    override val configKeyDomain = ConfigKey.Domain("thienthaitruyen.com")
+    // UPDATE: Cập nhật domain mới dựa trên canonical link trong HTML
+    override val configKeyDomain = ConfigKey.Domain("thienthaitruyen1.com")
 
     override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
@@ -30,19 +31,13 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         SortOrder.ALPHABETICAL_DESC // name_desc
     )
 
-    // =================================================================
-    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
-    // =================================================================
+    // Giữ nguyên phần bạn đã chỉnh sửa
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
-            // FIX: Sử dụng API cũ 'isMultipleTagsSupported' giống file DamCoNuong.kt
             isSearchSupported = true,
             isMultipleTagsSupported = true, 
-            isTagsExclusionSupported = false // Trang này không hỗ trợ loại trừ tag
+            isTagsExclusionSupported = false 
         )
-    // =================================================================
-    // KẾT THÚC HÀM CHỈNH SỬA
-    // =================================================================
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
         availableTags = availableTags(),
@@ -83,7 +78,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             appendParam("status=$statusValue")
 
             // 5. Tags (Genres)
-            // Nối nhiều tag bằng dấu "_"
             if (filter.tags.isNotEmpty()) {
                 val tagsQuery = filter.tags.joinToString("_") { it.key }
                 appendParam("genres=$tagsQuery")
@@ -92,11 +86,16 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
 
         val doc = webClient.httpGet(url).parseHtml()
         
-        val itemSelector = "div.grid.grid-cols-3.md\\:grid-cols-5 > a[href^='https://thienthaitruyen.com/truyen-tranh/']"
+        // UPDATE: Selector mới dựa trên cấu trúc Tailwind trong file HTML
+        // Tìm các div có class w-1/2 (mobile) và sm:w-1/5 (desktop) chứa thẻ a
+        val itemSelector = "div.w-1\\/2.sm\\:w-1\\/5 > a"
 
         return doc.select(itemSelector).map { a ->
             val href = a.attrAsRelativeUrl("href")
-            val title = a.selectFirst("span.line-clamp-2")?.text().orEmpty()
+            
+            // UPDATE: Tiêu đề nằm trong thẻ h3 thay vì span
+            val title = a.selectFirst("h3")?.text() ?: a.selectFirst("span.line-clamp-2")?.text().orEmpty()
+            
             val coverUrl = a.selectFirst("img")?.attr("src") ?: ""
 
             Manga(
@@ -116,6 +115,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }
     }
 
+    // Các hàm getDetails, getPages giữ nguyên hoặc cần kiểm tra lại với HTML trang chi tiết (không có trong file đính kèm)
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
         val chapterDateParser = RelativeDateParser(Locale("vi"))
@@ -204,7 +204,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         return genreContainer.select("label").mapNotNull { label ->
             val input = label.selectFirst("input[type=checkbox]")
             val title = label.selectFirst("span")?.text()
-            val key = input?.attr("value") // e.g., "adult"
+            val key = input?.attr("value") 
 
             if (key != null && title != null) {
                 MangaTag(
@@ -218,9 +218,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }.toSet()
     }
 
-    /**
-     * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
-     */
     private class RelativeDateParser(private val locale: Locale) {
         fun parse(relativeDate: String?): Long? {
             if (relativeDate.isNullOrBlank()) return null
@@ -250,9 +247,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }
     }
 
-    /**
-     * Helper function để thêm param vào URL một cách chính xác (xử lý ? và &)
-     */
     private fun StringBuilder.appendParam(param: String) {
         append(if (contains("?")) "&" else "?")
         append(param)
