@@ -7,16 +7,17 @@ import org.dokiteam.doki.parsers.config.ConfigKey
 import org.dokiteam.doki.parsers.core.PagedMangaParser
 import org.dokiteam.doki.parsers.model.*
 import org.dokiteam.doki.parsers.util.*
+import java.text.SimpleDateFormat
 import java.util.*
 
 @MangaSourceParser("THIENTHAITRUYEN", "Thiên Thai Truyện", "vi", type = ContentType.HENTAI)
 internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.THIENTHAITRUYEN, 60) {
 
-    // UPDATE: Cập nhật domain mới dựa trên canonical link trong HTML
     override val configKeyDomain = ConfigKey.Domain("thienthaitruyen1.com")
 
     override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
+        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         .build()
 
     override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
@@ -31,12 +32,11 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         SortOrder.ALPHABETICAL_DESC // name_desc
     )
 
-    // Giữ nguyên phần bạn đã chỉnh sửa
     override val filterCapabilities: MangaListFilterCapabilities
         get() = MangaListFilterCapabilities(
             isSearchSupported = true,
-            isMultipleTagsSupported = true, 
-            isTagsExclusionSupported = false 
+            isMultipleTagsSupported = true,
+            isTagsExclusionSupported = false
         )
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
@@ -77,7 +77,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
             appendParam("status=$statusValue")
 
-            // 5. Tags (Genres)
+            // 5. Tags
             if (filter.tags.isNotEmpty()) {
                 val tagsQuery = filter.tags.joinToString("_") { it.key }
                 appendParam("genres=$tagsQuery")
@@ -85,18 +85,26 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }
 
         val doc = webClient.httpGet(url).parseHtml()
-        
-        // UPDATE: Selector mới dựa trên cấu trúc Tailwind trong file HTML
-        // Tìm các div có class w-1/2 (mobile) và sm:w-1/5 (desktop) chứa thẻ a
-        val itemSelector = "div.w-1\\/2.sm\\:w-1\\/5 > a"
 
-        return doc.select(itemSelector).map { a ->
-            val href = a.attrAsRelativeUrl("href")
+        // Selector dựa trên file: thienthaitruyen1.com_tim-kiem-nang-cao.html
+        // Grid container: <div class="grid grid-cols-2 md:grid-cols-4 ...">
+        val itemSelector = "div.grid.grid-cols-2.md\\:grid-cols-4 > div"
+
+        return doc.select(itemSelector).map { div ->
+            // Tìm thẻ a chứa link truyện (thường bao quanh ảnh cover)
+            val linkElement = div.selectFirst("div.thumb-cover > a") 
+                ?: div.selectFirst("a[href*='/truyen-tranh/']")
+
+            val href = linkElement?.attrAsRelativeUrl("href") ?: return@map null
             
-            // UPDATE: Tiêu đề nằm trong thẻ h3 thay vì span
-            val title = a.selectFirst("h3")?.text() ?: a.selectFirst("span.line-clamp-2")?.text().orEmpty()
-            
-            val coverUrl = a.selectFirst("img")?.attr("src") ?: ""
+            // Title nằm ở div bên dưới: <div class="text-[15px] ..."><a ...>Title</a></div>
+            val titleElement = div.selectFirst("div.text-\\[15px\\] > a") ?: linkElement
+            val title = titleElement.text().trim()
+
+            val coverUrl = div.selectFirst("img")?.attr("src") ?: ""
+
+            // Status detection logic (optional, based on UI stickers if exist)
+            val isCompleted = div.selectFirst("span:contains(Full)") != null
 
             Manga(
                 id = generateUid(href),
@@ -106,33 +114,39 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
                 publicUrl = href.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
                 contentRating = ContentRating.ADULT,
-                coverUrl = coverUrl, 
+                coverUrl = coverUrl,
                 tags = setOf(),
-                state = null,
+                state = if (isCompleted) MangaState.FINISHED else MangaState.ONGOING,
                 authors = emptySet(),
                 source = source,
             )
-        }
+        }.filterNotNull()
     }
 
-    // Các hàm getDetails, getPages giữ nguyên hoặc cần kiểm tra lại với HTML trang chi tiết (không có trong file đính kèm)
     override suspend fun getDetails(manga: Manga): Manga {
+        // Dựa trên file: thienthaitruyen1.com_truyen-tranh_my-little-sister-is-a-shut-in-j18.html
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-        val chapterDateParser = RelativeDateParser(Locale("vi"))
+        
+        // Date parser hỗ trợ cả "2 giờ trước" và "19/06/2024"
+        val dateParser = SmartDateParser(Locale("vi"))
 
-        val author = root.selectFirst("div.grid div:contains(Tác giả) p.text-sm")
+        // Extract Description
+        val description = root.selectFirst("p.comic-content")?.text()?.trim()
+
+        // Extract Author
+        val author = root.selectFirst("div.col-span-9:has(div:contains(Tác giả)) p.text-sm")
             ?.text()?.takeIf { it.trim() != "Đang cập nhật" }
 
-        val scanlator = root.selectFirst("div.grid div:contains(Nhóm dịch) a")?.text()
-
-        val statusText = root.selectFirst("div.bg-[#343434] div:contains(Trạng thái) p.text-sm")?.text()
+        // Extract Status
+        val statusText = root.selectFirst("div.col-span-9:has(div:contains(Trạng thái)) p.text-sm")?.text()
         val state = when (statusText) {
             "Đang ra" -> MangaState.ONGOING
             "Hoàn thành" -> MangaState.FINISHED
-            else -> null
+            else -> MangaState.ONGOING
         }
 
-        val tags = root.select("div.space-y-1.pt-4 a[href*='/the-loai/']").mapToSet { a ->
+        // Extract Tags
+        val tags = root.select("div.space-y-1 a[href*='/the-loai/']").mapToSet { a ->
             MangaTag(
                 key = a.attr("href").substringAfterLast('/'),
                 title = a.text().trim(),
@@ -140,23 +154,27 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             )
         }
 
-        val description = root.selectFirst("p.comic-content.desk")?.text()
-
+        // Extract Chapters
+        // Selector: <div class="chapter-items">
         val chapters = root.select("div.chapter-items")
-            .mapChapters(reversed = true) { i, div ->
-                val a = div.selectFirstOrThrow("a")
+            .mapChapters(reversed = true) { i, item ->
+                val a = item.selectFirstOrThrow("a")
                 val href = a.attrAsRelativeUrl("href")
-                val name = a.selectFirst("p.text-sm")?.text().orEmpty()
-                val dateText = a.selectFirst("p.text-xs > span")?.text()
+                
+                // Name: <p class="text-sm ...">Oneshot</p>
+                val name = a.selectFirst("p.text-sm")?.text()?.trim() ?: "Chapter ${i + 1}"
+                
+                // Date: <p class="text-xs ..."><span>19/06/2024</span></p>
+                val dateText = a.selectFirst("p.text-xs span")?.text()?.trim()
 
                 MangaChapter(
                     id = generateUid(href),
                     title = name,
-                    number = name.substringAfter("Chương ").toFloatOrNull() ?: (i + 1).toFloat(),
+                    number = extractChapterNumber(name) ?: (i + 1).toFloat(),
                     volume = 0,
                     url = href,
-                    scanlator = scanlator,
-                    uploadDate = chapterDateParser.parse(dateText) ?: 0L,
+                    scanlator = null,
+                    uploadDate = dateParser.parse(dateText) ?: 0L,
                     branch = null,
                     source = source,
                 )
@@ -173,15 +191,25 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+        // Dựa trên file: thienthaitruyen1.com_truyen-tranh_my-little-sister-is-a-shut-in-j18_oneshot.html
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
 
-        val imageElements = doc.select("div.py-8 div[class*='mx-auto center'] > img")
+        // Selector: div.py-8 > div.center > img
+        // Container chính chứa ảnh
+        val container = doc.selectFirst("div.py-8 div.flex.flex-col.items-center") 
+            ?: doc.selectFirst("div.py-8 div.w-full.mx-auto")
+
+        val imageElements = container?.select("img") ?: return emptyList()
 
         return imageElements.mapNotNull { img ->
-            val url = img.attr("src")
+            val url = img.attr("src").ifEmpty { img.attr("data-src") }
             
-            if (url.contains("banner") || url.contains("thienthaitruyen-truyen-tranh-hentai.png")) {
+            // Lọc bỏ ảnh loading, ảnh lỗi hoặc banner quảng cáo
+            if (url.isBlank() || 
+                url.contains("thumb-loading.gif") || 
+                url.contains("thienthaitruyen-truyen-tranh-hentai.png") // Logo watermark thường thấy
+            ) {
                 null
             } else {
                 MangaPage(
@@ -198,13 +226,14 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val url = "https://$domain/tim-kiem-nang-cao"
         val doc = webClient.httpGet(url).parseHtml()
 
-        val genreContainer = doc.selectFirst("#genres-filter div.filter-dropdown-container")
+        // Tìm trong <div class="filter-dropdown-container">
+        val genreContainer = doc.selectFirst("div.filter-dropdown-container")
             ?: return emptySet()
 
         return genreContainer.select("label").mapNotNull { label ->
             val input = label.selectFirst("input[type=checkbox]")
             val title = label.selectFirst("span")?.text()
-            val key = input?.attr("value") 
+            val key = input?.attr("value")
 
             if (key != null && title != null) {
                 MangaTag(
@@ -218,26 +247,45 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         }.toSet()
     }
 
-    private class RelativeDateParser(private val locale: Locale) {
-        fun parse(relativeDate: String?): Long? {
-            if (relativeDate.isNullOrBlank()) return null
+    private fun extractChapterNumber(title: String): Float? {
+        // Regex để tìm số (VD: "Chương 10", "Chapter 10.5")
+        val regex = Regex("""(?:Chương|Chapter)\s+(\d+(\.\d+)?)""", RegexOption.IGNORE_CASE)
+        val match = regex.find(title)
+        return match?.groupValues?.get(1)?.toFloatOrNull()
+    }
+
+    private class SmartDateParser(private val locale: Locale) {
+        // Format cứng cho trường hợp "19/06/2024"
+        private val dateFormat = SimpleDateFormat("dd/MM/yyyy", locale)
+
+        fun parse(dateString: String?): Long? {
+            if (dateString.isNullOrBlank()) return null
             
+            val cleanDate = dateString.trim()
+
+            // 1. Thử parse dạng ngày tháng cụ thể
+            try {
+                if (cleanDate.contains("/")) {
+                    return dateFormat.parse(cleanDate)?.time
+                }
+            } catch (_: Exception) {}
+
+            // 2. Thử parse dạng tương đối (relative)
             try {
                 val now = Calendar.getInstance()
-                val parts = relativeDate.lowercase(locale).split(" ")
-
+                val parts = cleanDate.lowercase(locale).split(" ")
                 if (parts.size < 2) return null
 
                 val amount = parts[0].toIntOrNull() ?: return null
                 val unit = parts[1]
 
-                when (unit) {
-                    "phút" -> now.add(Calendar.MINUTE, -amount)
-                    "giờ" -> now.add(Calendar.HOUR, -amount)
-                    "ngày" -> now.add(Calendar.DAY_OF_YEAR, -amount)
-                    "tuần" -> now.add(Calendar.WEEK_OF_YEAR, -amount)
-                    "tháng" -> now.add(Calendar.MONTH, -amount)
-                    "năm" -> now.add(Calendar.YEAR, -amount)
+                when {
+                    unit.contains("phút") -> now.add(Calendar.MINUTE, -amount)
+                    unit.contains("giờ") -> now.add(Calendar.HOUR, -amount)
+                    unit.contains("ngày") -> now.add(Calendar.DAY_OF_YEAR, -amount)
+                    unit.contains("tuần") -> now.add(Calendar.WEEK_OF_YEAR, -amount)
+                    unit.contains("tháng") -> now.add(Calendar.MONTH, -amount)
+                    unit.contains("năm") -> now.add(Calendar.YEAR, -amount)
                     else -> return null
                 }
                 return now.timeInMillis
