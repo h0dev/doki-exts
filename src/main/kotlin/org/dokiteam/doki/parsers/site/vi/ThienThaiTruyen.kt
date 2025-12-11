@@ -61,24 +61,14 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val url = buildString {
             append("https://$domain/tim-kiem-nang-cao")
 
-            // 1. Query
-            if (!filter.query.isNullOrEmpty()) {
-                appendParam("name=${filter.query.urlEncoded()}")
+            // 1. Tags (Genres) - FIX: Nối các tag bằng dấu "_" thay vì gửi mảng genres[]
+            // URL mẫu đúng: ?genres=manhua_nguc-lon
+            if (filter.tags.isNotEmpty()) {
+                val tagsQuery = filter.tags.joinToString("_") { it.key }
+                appendParam("genres=$tagsQuery")
             }
 
-            // 2. Page
-            appendParam("page=$page")
-
-            // 3. Sort Order
-            val sortValue = when (order) {
-                SortOrder.POPULARITY -> "rating"
-                SortOrder.ALPHABETICAL -> "name_asc"
-                SortOrder.ALPHABETICAL_DESC -> "name_desc"
-                else -> "latest"
-            }
-            appendParam("sort=$sortValue")
-
-            // 4. Status
+            // 2. Status
             val statusValue = if (filter.states.isNotEmpty()) {
                 when (filter.states.first()) {
                     MangaState.ONGOING -> "ongoing"
@@ -90,36 +80,39 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
             appendParam("status=$statusValue")
 
-            // 5. Tags (Genres)
-            if (filter.tags.isNotEmpty()) {
-                // HTML form dùng name="genres[]", thông thường server PHP/Laravel sẽ nhận list
-                // Cách appendParam ở đây có thể cần điều chỉnh tùy backend, 
-                // nhưng based on code cũ & form, ta lặp qua từng tag
-                filter.tags.forEach { tag ->
-                    appendParam("genres[]=${tag.key}")
-                }
+            // 3. Sort Order
+            val sortValue = when (order) {
+                SortOrder.POPULARITY -> "rating"
+                SortOrder.ALPHABETICAL -> "name_asc"
+                SortOrder.ALPHABETICAL_DESC -> "name_desc"
+                SortOrder.UPDATED -> "latest" // Explicitly mapping UPDATED to latest
+                else -> "latest"
             }
+            appendParam("sort=$sortValue")
+
+            // 4. Query (Search name)
+            if (!filter.query.isNullOrEmpty()) {
+                appendParam("name=${filter.query.urlEncoded()}")
+            }
+
+            // 5. Page
+            // Lưu ý: Trang web này có thể dùng ?page= hoặc cơ chế phân trang khác, 
+            // nhưng thường page nằm cuối để tránh conflict query string
+            appendParam("page=$page")
         }
 
+        // ... (Phần code parse HTML giữ nguyên như cũ)
         val doc = webClient.httpGet(url).parseHtml()
         
-        // UPDATE: Selector chính xác theo HTML mới
-        // Container: div.grid.grid-cols-3.md:grid-cols-5
-        // Item: thẻ <a> trực tiếp bên trong
+        // Selector chính xác theo HTML mới
         val itemSelector = "div.grid.grid-cols-3.md\\:grid-cols-5 > a"
 
         return doc.select(itemSelector).map { a ->
             val href = a.attrAsRelativeUrl("href")
-            
-            // Title nằm trong span.line-clamp-2
             val title = a.selectFirst("span.line-clamp-2")?.text()?.trim().orEmpty()
             
-            // Cover nằm trong img, lấy src trực tiếp (HTML provided có src thật, không dùng data-src)
             val coverElement = a.selectFirst("img")
             val coverUrl = coverElement?.attr("src") ?: ""
-
-            // Lấy chapter mới nhất để hiển thị thêm (optional)
-            val latestChapter = a.selectFirst("span.text-[#999]")?.text()
 
             Manga(
                 id = generateUid(href),
@@ -131,7 +124,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
                 contentRating = ContentRating.ADULT,
                 coverUrl = coverUrl, 
                 tags = setOf(),
-                state = null, // List page không hiển thị rõ state trừ khi parse cái badge "Đang ra"
+                state = null,
                 authors = emptySet(),
                 source = source,
             )
