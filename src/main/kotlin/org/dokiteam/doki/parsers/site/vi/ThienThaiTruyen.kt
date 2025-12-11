@@ -15,19 +15,16 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
 
     override val configKeyDomain = ConfigKey.Domain("thienthaitruyen1.com")
 
-    // UPDATE: Thêm đầy đủ headers để giả lập trình duyệt thật (bypass WAF)
     override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
         .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
         .add("Accept-Language", "vi-VN,vi;q=0.9")
-        .add("Cache-Control", "max-age=0")
         .add("Sec-Ch-Ua", "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"")
         .add("Sec-Ch-Ua-Mobile", "?1")
         .add("Sec-Ch-Ua-Platform", "\"Android\"")
         .add("Sec-Fetch-Dest", "document")
         .add("Sec-Fetch-Mode", "navigate")
         .add("Sec-Fetch-Site", "same-origin")
-        .add("Sec-Fetch-User", "?1")
         .add("Upgrade-Insecure-Requests", "1")
         .add("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36")
         .build()
@@ -60,12 +57,15 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val url = buildString {
             append("https://$domain/tim-kiem-nang-cao")
 
+            // 1. Query
             if (!filter.query.isNullOrEmpty()) {
                 appendParam("name=${filter.query.urlEncoded()}")
             }
 
+            // 2. Page
             appendParam("page=$page")
 
+            // 3. Sort Order
             val sortValue = when (order) {
                 SortOrder.POPULARITY -> "rating"
                 SortOrder.ALPHABETICAL -> "name_asc"
@@ -74,6 +74,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
             appendParam("sort=$sortValue")
 
+            // 4. Status
             val statusValue = if (filter.states.isNotEmpty()) {
                 when (filter.states.first()) {
                     MangaState.ONGOING -> "ongoing"
@@ -85,38 +86,35 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
             appendParam("status=$statusValue")
 
+            // 5. Tags (Genres)
             if (filter.tags.isNotEmpty()) {
-                val tagsQuery = filter.tags.joinToString("_") { it.key }
+                // FIX: Dùng dấu phẩy ',' thay vì '_' để nối các genres
+                val tagsQuery = filter.tags.joinToString(",") { it.key }
                 appendParam("genres=$tagsQuery")
             }
         }
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // SELECTOR STRATEGY: Tìm div.thumb-cover vì đây là class đặc trưng nhất của mỗi truyện
-        // Cấu trúc HTML:
-        // <div class="w-full ..."> (Container)
-        //    <div class="thumb-cover ..."> (Cover + Link)
-        //    <div class="... pl-[9px]"> (Info + Title)
-        val thumbElements = doc.select("div.thumb-cover")
+        // Tìm tất cả div trong grid
+        val itemElements = doc.select("div.grid > div")
 
-        return thumbElements.mapNotNull { thumb ->
-            val linkNode = thumb.selectFirst("a") ?: return@mapNotNull null
-            val href = linkNode.attrAsRelativeUrl("href")
-            val coverUrl = thumb.selectFirst("img")?.attr("src") ?: ""
+        return itemElements.mapNotNull { div ->
+            // Tìm thẻ a chứa ảnh (cover)
+            val coverLink = div.selectFirst("a:has(img)") ?: return@mapNotNull null
+            val href = coverLink.attrAsRelativeUrl("href")
+            val coverUrl = coverLink.selectFirst("img")?.attr("src") ?: ""
 
-            // Tìm tiêu đề:
-            // 1. Thử tìm thẻ h3 hoặc thẻ a chứa text trong phần anh em (sibling) của thumb-cover
-            // 2. Nếu không thấy, fallback về title attribute của link hoặc alt của ảnh
-            val container = thumb.parent()
-            val titleNode = container?.selectFirst("h3 a, div[class*='text-'] > a, span.font-medium")
+            // Tìm title
+            val container = div.parent() ?: div
+            val titleNode = div.selectFirst("h3 a, div[class*='text-'] > a, span.font-medium")
             
             val title = titleNode?.text()?.trim()
-                ?: linkNode.attr("title").takeIf { it.isNotEmpty() }
-                ?: thumb.selectFirst("img")?.attr("alt")?.replace("truyện tranh ", "", true)?.trim()
+                ?: coverLink.attr("title").takeIf { it.isNotEmpty() }
+                ?: coverLink.selectFirst("img")?.attr("alt")?.replace("truyện tranh ", "", true)?.trim()
                 ?: ""
 
-            if (title.isBlank()) return@mapNotNull null
+            if (title.isBlank() || href.contains("/chuong-")) return@mapNotNull null
 
             Manga(
                 id = generateUid(href),
@@ -200,8 +198,10 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val imageElements = container?.select("img") ?: return emptyList()
 
         return imageElements.mapNotNull { img ->
-            val url = img.attr("src").ifEmpty { img.attr("data-src") }
+            // FIX: Ưu tiên data-src vì src chứa ảnh loading
+            val url = img.attr("data-src").ifBlank { img.attr("src") }
             
+            // Lọc bỏ ảnh rác
             if (url.isBlank() || 
                 url.contains("thumb-loading.gif") || 
                 url.contains("thienthaitruyen-truyen-tranh-hentai.png")
@@ -222,18 +222,18 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val url = "https://$domain/tim-kiem-nang-cao"
         val doc = webClient.httpGet(url).parseHtml()
 
-        val genreContainer = doc.selectFirst("div.filter-dropdown-container")
-            ?: return emptySet()
+        // Tìm tất cả label có chứa input checkbox (cách này bắt được mọi layout)
+        val labels = doc.select("label:has(input[type=checkbox])")
 
-        return genreContainer.select("label").mapNotNull { label ->
-            val input = label.selectFirst("input[type=checkbox]")
-            val title = label.selectFirst("span")?.text()
+        return labels.mapNotNull { label ->
+            val input = label.selectFirst("input")
+            val title = label.selectFirst("span")?.text()?.trim() ?: label.text().trim()
             val key = input?.attr("value")
 
-            if (key != null && title != null) {
+            if (key != null && title.isNotEmpty()) {
                 MangaTag(
                     key = key,
-                    title = title.trim(),
+                    title = title,
                     source = source,
                 )
             } else {
