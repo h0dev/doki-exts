@@ -15,9 +15,21 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
 
     override val configKeyDomain = ConfigKey.Domain("thienthaitruyen1.com")
 
+    // UPDATE: Thêm đầy đủ headers để giả lập trình duyệt thật (bypass WAF)
     override fun getRequestHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
-        .add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+        .add("Accept-Language", "vi-VN,vi;q=0.9")
+        .add("Cache-Control", "max-age=0")
+        .add("Sec-Ch-Ua", "\"Chromium\";v=\"137\", \"Not/A)Brand\";v=\"24\"")
+        .add("Sec-Ch-Ua-Mobile", "?1")
+        .add("Sec-Ch-Ua-Platform", "\"Android\"")
+        .add("Sec-Fetch-Dest", "document")
+        .add("Sec-Fetch-Mode", "navigate")
+        .add("Sec-Fetch-Site", "same-origin")
+        .add("Sec-Fetch-User", "?1")
+        .add("Upgrade-Insecure-Requests", "1")
+        .add("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36")
         .build()
 
     override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
@@ -48,15 +60,12 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val url = buildString {
             append("https://$domain/tim-kiem-nang-cao")
 
-            // 1. Query
             if (!filter.query.isNullOrEmpty()) {
                 appendParam("name=${filter.query.urlEncoded()}")
             }
 
-            // 2. Page
             appendParam("page=$page")
 
-            // 3. Sort Order
             val sortValue = when (order) {
                 SortOrder.POPULARITY -> "rating"
                 SortOrder.ALPHABETICAL -> "name_asc"
@@ -65,7 +74,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
             appendParam("sort=$sortValue")
 
-            // 4. Status
             val statusValue = if (filter.states.isNotEmpty()) {
                 when (filter.states.first()) {
                     MangaState.ONGOING -> "ongoing"
@@ -77,7 +85,6 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             }
             appendParam("status=$statusValue")
 
-            // 5. Tags
             if (filter.tags.isNotEmpty()) {
                 val tagsQuery = filter.tags.joinToString("_") { it.key }
                 appendParam("genres=$tagsQuery")
@@ -86,34 +93,30 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
 
         val doc = webClient.httpGet(url).parseHtml()
 
-        // FIX: Selector quát rộng hơn để bắt được items trong mọi loại Grid (2 cột, 4 cột, 5 cột...)
-        // Tìm tất cả các div nằm trực tiếp trong một grid container
-        val itemElements = doc.select("div.grid > div")
+        // SELECTOR STRATEGY: Tìm div.thumb-cover vì đây là class đặc trưng nhất của mỗi truyện
+        // Cấu trúc HTML:
+        // <div class="w-full ..."> (Container)
+        //    <div class="thumb-cover ..."> (Cover + Link)
+        //    <div class="... pl-[9px]"> (Info + Title)
+        val thumbElements = doc.select("div.thumb-cover")
 
-        return itemElements.mapNotNull { div ->
-            // Tìm link truyện (ưu tiên link chứa ảnh)
-            // Selector này tìm thẻ 'a' có href chứa /truyen-tranh/ VÀ bên trong có thẻ 'img'
-            val coverLink = div.selectFirst("a[href*='/truyen-tranh/']:has(img)") 
-                ?: return@mapNotNull null // Nếu không có ảnh bìa -> bỏ qua (có thể là quảng cáo hoặc header)
+        return thumbElements.mapNotNull { thumb ->
+            val linkNode = thumb.selectFirst("a") ?: return@mapNotNull null
+            val href = linkNode.attrAsRelativeUrl("href")
+            val coverUrl = thumb.selectFirst("img")?.attr("src") ?: ""
 
-            val href = coverLink.attrAsRelativeUrl("href")
-            val coverUrl = coverLink.selectFirst("img")?.attr("src") ?: ""
-
-            // Tìm tiêu đề
-            // 1. Tìm thẻ text ở bên dưới (thường là sibling của cover wrapper)
-            // 2. Nếu không thấy, lấy từ attribute 'title' của thẻ a
-            // 3. Nếu không thấy, lấy từ 'alt' của ảnh
-            val titleElement = div.selectFirst("div a[href*='/truyen-tranh/']:not(:has(img))") 
-                ?: div.selectFirst("h3 a") 
-                ?: div.selectFirst("span.font-medium")
-
-            val title = titleElement?.text()?.trim() 
-                ?: coverLink.attr("title").trim().takeIf { it.isNotEmpty() }
-                ?: coverLink.selectFirst("img")?.attr("alt")?.replace("truyện tranh ", "", true)?.trim()
+            // Tìm tiêu đề:
+            // 1. Thử tìm thẻ h3 hoặc thẻ a chứa text trong phần anh em (sibling) của thumb-cover
+            // 2. Nếu không thấy, fallback về title attribute của link hoặc alt của ảnh
+            val container = thumb.parent()
+            val titleNode = container?.selectFirst("h3 a, div[class*='text-'] > a, span.font-medium")
+            
+            val title = titleNode?.text()?.trim()
+                ?: linkNode.attr("title").takeIf { it.isNotEmpty() }
+                ?: thumb.selectFirst("img")?.attr("alt")?.replace("truyện tranh ", "", true)?.trim()
                 ?: ""
 
-            // Loại bỏ các item rác không có tiêu đề hoặc link hỏng
-            if (title.isBlank() || href.contains("/chuong-")) return@mapNotNull null
+            if (title.isBlank()) return@mapNotNull null
 
             Manga(
                 id = generateUid(href),
@@ -129,14 +132,13 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
                 authors = emptySet(),
                 source = source,
             )
-        }.distinctBy { it.url } // Loại bỏ trùng lặp nếu parser quét trúng 1 truyện nhiều lần
+        }.distinctBy { it.url }
     }
 
     override suspend fun getDetails(manga: Manga): Manga {
         val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
         val dateParser = SmartDateParser(Locale("vi"))
 
-        // Selector Description (cố gắng tìm class phổ biến hoặc thẻ p chứa nội dung)
         val description = root.selectFirst("p.comic-content")?.text()?.trim()
             ?: root.selectFirst("div.detail-content p")?.text()?.trim()
 
@@ -192,17 +194,14 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
         val fullUrl = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(fullUrl).parseHtml()
 
-        // Tìm container chứa ảnh: div có class 'py-8' và bên trong có 'flex-col items-center'
         val container = doc.selectFirst("div.py-8 div.flex.flex-col.items-center") 
-            ?: doc.selectFirst("div.py-8 div.w-full.mx-auto") // Fallback cho layout cũ
+            ?: doc.selectFirst("div.py-8 div.w-full.mx-auto")
 
         val imageElements = container?.select("img") ?: return emptyList()
 
         return imageElements.mapNotNull { img ->
-            // Lấy src, nếu lazyload thì lấy data-src
             val url = img.attr("src").ifEmpty { img.attr("data-src") }
             
-            // Filter ảnh rác
             if (url.isBlank() || 
                 url.contains("thumb-loading.gif") || 
                 url.contains("thienthaitruyen-truyen-tranh-hentai.png")
@@ -254,12 +253,9 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
 
         fun parse(dateString: String?): Long? {
             if (dateString.isNullOrBlank()) return null
-            
             val cleanDate = dateString.trim()
             try {
-                if (cleanDate.contains("/")) {
-                    return dateFormat.parse(cleanDate)?.time
-                }
+                if (cleanDate.contains("/")) return dateFormat.parse(cleanDate)?.time
                 val now = Calendar.getInstance()
                 val parts = cleanDate.lowercase(locale).split(" ")
                 
