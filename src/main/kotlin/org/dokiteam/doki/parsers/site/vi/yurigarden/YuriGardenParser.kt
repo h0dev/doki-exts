@@ -236,38 +236,47 @@ internal abstract class YuriGardenParser(
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val requestUrl = "https://$apiSuffix/chapters/${chapter.url}"
+        // 1. Lấy response gốc
         var json = webClient.httpGet(requestUrl).parseJson()
 
-        // === BẮT ĐẦU LOGIC GIẢI MÃ ===
+        // 2. Nếu response báo là encrypted
         if (json.optBoolean("encrypted")) {
-            val encryptedData = json.getString("data")
-            
-            // Script giải mã: Gọi Er.cd() (hàm lõi của SX)
-            // Lưu ý: JSON.stringify để trả về String cho Kotlin
+            // Lấy toàn bộ JSON string của response hiện tại ({"encrypted":true,"data":"..."})
+            val fullResponseString = json.toString()
+
+            // 3. Script giải mã
+            // - Tạo biến t bằng chính fullResponseString (JS sẽ hiểu là object literal)
+            // - Gọi Er.cd(t) truyền nguyên object t vào
             val js = """
                 (function() {
                     try {
-                        // Gọi hàm giải mã của web. 
-                        // Nếu web dùng SX(response), thì lõi thường là Er.cd(string_data)
-                        return JSON.stringify(Er.cd("$encryptedData"));
+                        // Inject json string vào đây để tạo thành object JS
+                        var t = $fullResponseString; 
+                        
+                        // Gọi hàm giải mã của web với tham số là object t
+                        var result = Er.cd(t);
+                        
+                        // Result thường là object { "pages": [...] }, stringify để trả về cho Kotlin
+                        return JSON.stringify(result);
                     } catch(e) {
                         return null;
                     }
                 })();
             """.trimIndent()
 
-            // QUAN TRỌNG: Phải chạy evaluateJs trên domain chính (Frontend) để load được script chứa 'Er'
-            // Không chạy trên requestUrl (API) vì API không chứa script JS.
-            val pageUrl = "https://$domain/comic/${chapter.url.substringBefore("/")}"
+            // 4. Chạy script trên context trang web (để load được thư viện Er)
+            // Lấy ID truyện từ chapter url để build url trang đọc/chi tiết
+            val comicId = chapter.url.substringBefore("/") 
+            val pageUrl = "https://$domain/comic/$comicId"
             
             val decryptedStr = context.evaluateJs(pageUrl, js) 
-                ?: throw IOException("Không thể giải mã dữ liệu chapter (JS return null)")
+                ?: throw IOException("Lỗi giải mã: WebView trả về null (có thể do thiếu thư viện Er hoặc script sai)")
             
-            // Parse chuỗi đã giải mã thành JSONObject để tiếp tục logic cũ
+            // 5. Parse kết quả đã giải mã thành JSONObject để code phía dưới map như bình thường
             json = JSONObject(decryptedStr)
         }
-        // === KẾT THÚC LOGIC GIẢI MÃ ===
 
+        // --- Logic map pages bên dưới giữ nguyên ---
         val pages = json.getJSONArray("pages").asTypedList<JSONObject>()
 
         return pages.mapIndexed { index, page ->
