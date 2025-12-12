@@ -235,37 +235,69 @@ internal abstract class YuriGardenParser(
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val json = webClient.httpGet("https://$apiSuffix/chapters/${chapter.url}").parseJson()
-		val pages = json.getJSONArray("pages").asTypedList<JSONObject>()
+        val requestUrl = "https://$apiSuffix/chapters/${chapter.url}"
+        var json = webClient.httpGet(requestUrl).parseJson()
 
-		return pages.mapIndexed { index, page ->
-			val rawUrl = page.getString("url")
+        // === BẮT ĐẦU LOGIC GIẢI MÃ ===
+        if (json.optBoolean("encrypted")) {
+            val encryptedData = json.getString("data")
+            
+            // Script giải mã: Gọi Er.cd() (hàm lõi của SX)
+            // Lưu ý: JSON.stringify để trả về String cho Kotlin
+            val js = """
+                (function() {
+                    try {
+                        // Gọi hàm giải mã của web. 
+                        // Nếu web dùng SX(response), thì lõi thường là Er.cd(string_data)
+                        return JSON.stringify(Er.cd("$encryptedData"));
+                    } catch(e) {
+                        return null;
+                    }
+                })();
+            """.trimIndent()
 
-			if (rawUrl.startsWith("comics")) {
-				val key = page.optString("key", null)
-				val url = "https://$cdnSuffix/$rawUrl".toHttpUrl().newBuilder().apply {
-					if (!key.isNullOrEmpty()) {
-						fragment("KEY=$key")
-					}
-				}
+            // QUAN TRỌNG: Phải chạy evaluateJs trên domain chính (Frontend) để load được script chứa 'Er'
+            // Không chạy trên requestUrl (API) vì API không chứa script JS.
+            val pageUrl = "https://$domain/comic/${chapter.url.substringBefore("/")}"
+            
+            val decryptedStr = context.evaluateJs(pageUrl, js) 
+                ?: throw IOException("Không thể giải mã dữ liệu chapter (JS return null)")
+            
+            // Parse chuỗi đã giải mã thành JSONObject để tiếp tục logic cũ
+            json = JSONObject(decryptedStr)
+        }
+        // === KẾT THÚC LOGIC GIẢI MÃ ===
 
-				MangaPage(
-					id = generateUid(index.toLong()),
-					url = url.build().toString(),
-					preview = null,
-					source = source,
-				)
-			} else {
-				val url = rawUrl.toHttpUrlOrNull()?.toString() ?: rawUrl
-				MangaPage(
-					id = generateUid(index.toLong()),
-					url = url,
-					preview = null,
-					source = source,
-				)
-			}
-		}
-	}
+        val pages = json.getJSONArray("pages").asTypedList<JSONObject>()
+
+        return pages.mapIndexed { index, page ->
+            val rawUrl = page.getString("url")
+
+            if (rawUrl.startsWith("comics")) {
+                val key = page.optString("key", null)
+                val url = "https://$cdnSuffix/$rawUrl".toHttpUrl().newBuilder().apply {
+                    if (!key.isNullOrEmpty()) {
+                        fragment("KEY=$key")
+                    }
+                }
+
+                MangaPage(
+                    id = generateUid(index.toLong()),
+                    url = url.build().toString(),
+                    preview = null,
+                    source = source,
+                )
+            } else {
+                val url = rawUrl.toHttpUrlOrNull()?.toString() ?: rawUrl
+                MangaPage(
+                    id = generateUid(index.toLong()),
+                    url = url,
+                    preview = null,
+                    source = source,
+                )
+            }
+        }
+    }
 
 	override fun intercept(chain: Interceptor.Chain): Response {
 		val response = chain.proceed(chain.request())
