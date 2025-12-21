@@ -20,7 +20,7 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.DAMCONUONG, 30) {
 
 	// --- Các thuộc tính và hàm khởi tạo ---
-	override val configKeyDomain = ConfigKey.Domain("damconuong.co")
+	override val configKeyDomain = ConfigKey.Domain("damconuong.onl")
 	private val availableTags = suspendLazy(initializer = ::fetchTags)
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.ALPHABETICAL,
@@ -230,41 +230,46 @@ internal class DamCoNuong(context: MangaLoaderContext) :
         val url = chapter.url.toAbsoluteUrl(domain)
         val doc = webClient.httpGet(url).parseHtml()
 
-        // Ưu tiên 1: Tìm script chứa fallbackUrls
-        doc.selectFirst("script:containsData(window.encryptionConfig)")?.data()?.let { scriptContent ->
-            val fallbackUrlsRegex = Regex(""""fallbackUrls"\s*:\s*(\[.*?])""")
-            val arrayString = fallbackUrlsRegex.find(scriptContent)?.groupValues?.getOrNull(1)
+        // Chọn container chứa ảnh dựa trên HTML mới
+        val contentDiv = doc.selectFirst("div#chapter-content")
+            ?: throw ParseException("Không tìm thấy div#chapter-content chứa ảnh", url)
 
-            if (arrayString != null) {
-                val urlRegex = Regex("""["'](https?:\\?/\\?[^"']+\.(?:jpg|jpeg|png|webp|gif))["']""")
-                val scriptImages = urlRegex.findAll(arrayString).map {
-                    it.groupValues[1].replace("\\/", "/") // Thay thế \/ thành /
-                }.toList()
+        // Lấy tất cả thẻ img bên trong, loại bỏ các thẻ quảng cáo nếu có
+        val images = contentDiv.select("img").mapNotNull { img ->
+            // Thứ tự ưu tiên attribute dựa trên source HTML:
+            // 1. data-original-src: Link ảnh gốc (thường dùng cho lazyload custom)
+            // 2. data-src: Link ảnh lazyload chuẩn
+            // 3. src: Fallback (nhưng cần check xem có phải loading.gif không)
+            val rawUrl = img.attr("data-original-src").takeIf { it.isNotBlank() }
+                ?: img.attr("data-src").takeIf { it.isNotBlank() }
+                ?: img.attr("src").takeIf { it.isNotBlank() }
 
-                if (scriptImages.isNotEmpty()) {
-                    return scriptImages.mapIndexed { index, imgUrl ->
-                        MangaPage(id = generateUid("${chapter.id}_page_${index + 1}"), url = imgUrl, preview = null, source = source)
-                    }
-                }
+            // Bỏ qua nếu không tìm thấy URL hoặc URL là ảnh loading mặc định
+            if (rawUrl == null || rawUrl.contains("loading.gif") || rawUrl.startsWith("data:image")) {
+                return@mapNotNull null
             }
-        }
 
-        // Ưu tiên 2: Tìm các thẻ img trong div#chapter-content
-        val tagImagePages = doc.select("div#chapter-content img").mapNotNull { img ->
-            val imageUrl = (img.attr("abs:src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
-                ?: img.attr("abs:data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") })
-                ?.trim()
-
-            imageUrl?.let {
-                MangaPage(id = generateUid(it), url = it, preview = null, source = source)
+            // Chuẩn hóa URL (xử lý protocol-relative // hoặc relative /)
+            var finalUrl = rawUrl.trim()
+            if (finalUrl.startsWith("//")) {
+                finalUrl = "https:$finalUrl"
+            } else if (finalUrl.startsWith("/")) {
+                finalUrl = "https://$domain$finalUrl"
             }
+
+            MangaPage(
+                id = generateUid(finalUrl),
+                url = finalUrl,
+                preview = null,
+                source = source
+            )
         }
 
-        if (tagImagePages.isNotEmpty()) {
-            return tagImagePages
+        if (images.isNotEmpty()) {
+            return images
         }
 
-        throw ParseException("Không tìm thấy ảnh chapter nào cho: ${chapter.url}", url)
+        throw ParseException("Không tìm thấy danh sách ảnh trong chapter", url)
     }
 
 	// --- Các hàm tiện ích ---
