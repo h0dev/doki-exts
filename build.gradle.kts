@@ -54,6 +54,7 @@ dependencies {
     implementation(libs.json)
     implementation(libs.androidx.collection)
     implementation(libs.nanohttpd)
+    implementation(libs.gson)
 
     ksp(project(":doki-ksp"))
 
