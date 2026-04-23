@@ -207,7 +207,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
                     number = chapterNumber,
                     volume = 0,
                     url = "/album/$slug/chapter-$chapterNumber-$chapterId",
-                    uploadDate = chapterInfo.optString("last_update").takeIf { it.isNotEmpty() }?.let { df.parseSafe(it) },
+                    uploadDate = chapterInfo.optString("last_update").takeIf { it.isNotEmpty() }?.let { df.parseSafe(it) } ?: 0L,
                     branch = null,
                     scanlator = null,
                     source = source,
