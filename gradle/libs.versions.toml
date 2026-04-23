@@ -9,6 +9,7 @@ okhttp = "4.12.0"
 okio = "3.11.0"
 jsoup = "1.19.1"
 json = "20240303"
+gson = "2.10.1"
 kotlinx-serialization = "1.7.1"
 androidx-collection = "1.5.0"
 nanohttpd = "2.3.1"
@@ -30,10 +31,11 @@ nanohttpd = { module = "org.nanohttpd:nanohttpd", version.ref = "nanohttpd" }
 # Parsing & Utilities
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 json = { module = "org.json:json", version.ref = "json" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 androidx-collection = { module = "androidx.collection:collection", version.ref = "androidx-collection" }
 
 # KSP Processor (project dependency)
-doki-ksp = { module = "org.dokiteam:doki-ksp" } # Giả định group và name của project :doki-ksp
+doki-ksp = { module = "org.dokiteam:doki-ksp" }
 
 # Testing
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
@@ -48,5 +50,4 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 
 [bundles]
-# Nhóm các thư viện test của JUnit lại cho gọn
 junit = ["junit-api", "junit-engine", "junit-params"]
