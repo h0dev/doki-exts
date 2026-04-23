@@ -15,7 +15,6 @@ ksp {
     arg("summaryOutputDir", "${project.projectDir}/.github")
 }
 
-// ✅ ĐÃ CẬP NHẬT: Sử dụng compilerOptions theo chuẩn mới
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
     compilerOptions {
         freeCompilerArgs.addAll(listOf(
