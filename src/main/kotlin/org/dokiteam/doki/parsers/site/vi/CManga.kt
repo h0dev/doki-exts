@@ -77,6 +77,8 @@ internal class CMangaParser(context: MangaLoaderContext) :
     // ============================== Danh sách truyện ===============================
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+        val currentTags = tags.get() // Lấy tags một lần
+
         val url = urlBuilder().apply {
             if (filter.query.isNullOrEmpty() && (order == SortOrder.RELEVANCE ||
                         order == SortOrder.POPULARITY_TODAY ||
@@ -127,13 +129,13 @@ internal class CMangaParser(context: MangaLoaderContext) :
         return dataArray.mapJSONNotNull { jo ->
             val infoRaw = jo.optString("info")
             if (infoRaw.isNullOrEmpty()) return@mapJSONNotNull null
-            
+
             val info = safeParseJson(infoRaw) ?: return@mapJSONNotNull null
-            
+
             val slug = info.optString("url").takeIf { it.isNotEmpty() } ?: return@mapJSONNotNull null
             val id = info.optLong("id", 0L)
             if (id == 0L) return@mapJSONNotNull null
-            
+
             val relativeUrl = "/album/$slug-$id"
             val title = info.optString("name").replace("\\", "")
             val altTitles = info.optJSONArray("name_other")?.let {
@@ -149,7 +151,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
                 rating = RATING_UNKNOWN,
                 contentRating = null,
                 coverUrl = resolveCoverUrl(info.optString("avatar")),
-                tags = extractTagsFromInfo(info),
+                tags = extractTagsFromInfo(info, currentTags),
                 state = when (info.optString("status")) {
                     "doing" -> MangaState.ONGOING
                     "done" -> MangaState.FINISHED
@@ -182,14 +184,14 @@ internal class CMangaParser(context: MangaLoaderContext) :
                 "/api/chapter_list?album=$mangaId&page=$currentPage&limit=$CHAPTER_PAGE_SIZE&v=${System.currentTimeMillis() / 1000}"
                     .toAbsoluteUrl(domain)
             ).parseJson()
-            
+
             val items = response.optJSONArray("data") ?: break
             if (items.length() == 0) break
 
             val chaptersOnPage = items.mapChapters(reversed = true) { _, jo ->
                 val infoRaw = jo.optString("info")
                 if (infoRaw.isNullOrEmpty()) return@mapChapters null
-                
+
                 val chapterInfo = safeParseJson(infoRaw) ?: return@mapChapters null
                 val chapterId = chapterInfo.optString("id").takeIf { it.isNotEmpty() }
                     ?: jo.optLong("id_chapter", 0L).toString()
@@ -235,7 +237,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
 
         val response = webClient.httpGet(url).parseJson()
         val imageData = response.optJSONObject("data")
-        
+
         if (imageData == null || imageData.optInt("status") != 1) {
             val message = response.optString("message")
             if (message?.contains("login", ignoreCase = true) == true) {
@@ -286,19 +288,19 @@ internal class CMangaParser(context: MangaLoaderContext) :
     }
 
     private fun buildChapterTitle(number: Float, title: String?): String {
-        val numStr = if (number == number.toInt().toFloat()) number.toInt().toString() 
-                     else number.toString()
+        val numStr = if (number == number.toInt().toFloat()) number.toInt().toString()
+        else number.toString()
         val chapterNum = "Chương $numStr"
         if (title.isNullOrBlank()) return chapterNum
-        
+
         val normalizedTitle = title.lowercase().trim().removeSuffix(":").removeSuffix(".")
         val normalizedNum = numStr.lowercase()
-        
+
         when (normalizedTitle) {
-            "chương $normalizedNum", "chapter $normalizedNum", 
+            "chương $normalizedNum", "chapter $normalizedNum",
             "chap $normalizedNum", normalizedNum -> return chapterNum
         }
-        
+
         return "$chapterNum: $title"
     }
 
@@ -312,23 +314,23 @@ internal class CMangaParser(context: MangaLoaderContext) :
         return hasActiveLock || level != 0 || lockLevel != 0 || lockFee != 0
     }
 
-    private fun extractTagsFromInfo(info: JSONObject): Set<MangaTag> {
+    private fun extractTagsFromInfo(info: JSONObject, tagsMap: Map<String, MangaTag>): Set<MangaTag> {
         val tagsArray = info.optJSONArray("tags")
         if (tagsArray != null && tagsArray.length() > 0) {
             return tagsArray.asTypedList<String>()
-                .mapNotNull { tagName -> tags.get()[tagName.lowercase()] }
+                .mapNotNull { tagName -> tagsMap[tagName.lowercase()] }
                 .toSet()
         }
-        
+
         // Fallback: nếu tags là string (do JSON bị lỗi)
         val tagsString = info.optString("tags")
         if (tagsString.isNotEmpty() && !tagsString.startsWith("[")) {
             val extractedTags = tagsString.split(Regex("[,，]"))
                 .map { it.trim().removeSurrounding("\"") }
                 .filter { it.isNotEmpty() }
-            return extractedTags.mapNotNull { tagName -> tags.get()[tagName.lowercase()] }.toSet()
+            return extractedTags.mapNotNull { tagName -> tagsMap[tagName.lowercase()] }.toSet()
         }
-        
+
         return emptySet()
     }
 
@@ -366,12 +368,11 @@ internal class CMangaParser(context: MangaLoaderContext) :
 
     private fun safeParseJson(raw: String): JSONObject? {
         if (raw.isBlank()) return null
-        
+
         val sanitized = sanitizeJsonString(raw)
         return runCatching {
             JSONObject(sanitized)
         }.getOrElse { error ->
-            // Log error but don't crash
             println("JSON parse error: ${error.message}\nRaw: ${raw.take(200)}")
             null
         }
@@ -379,30 +380,30 @@ internal class CMangaParser(context: MangaLoaderContext) :
 
     private fun sanitizeJsonString(raw: String): String {
         var cleaned = raw
-        
+
         // 1. Escape newlines and carriage returns
         cleaned = cleaned.replace(Regex("""(?<!\\)\n"""), "\\n")
         cleaned = cleaned.replace(Regex("""(?<!\\)\r"""), "\\r")
-        
+
         // 2. Add missing commas between strings
         cleaned = cleaned.replace(Regex("""("\s*")(?=[^:,\]}])"""), "\",\"")
-        
+
         // 3. Add missing commas after numbers/booleans/null
         cleaned = cleaned.replace(Regex("""(\d+|true|false|null)\s+("\w+)"""), "$1, $2")
-        
+
         // 4. Ensure keys are quoted
         cleaned = cleaned.replace(Regex("""([{,]\s*)(\w+)(\s*:)"""), "$1\"$2\"$3")
-        
+
         // 5. Fix broken array items (e.g., ["a" "b"] -> ["a", "b"])
         cleaned = cleaned.replace(Regex("""\[\s*"([^"]+)"\s+"([^"]+)"\s*\]"""), "[\"$1\", \"$2\"]")
-        
+
         // 6. Fix missing commas between array items (general case)
         cleaned = cleaned.replace(Regex("""\]\s*\["""), "],[")
-        
+
         // 7. Remove trailing commas
         cleaned = cleaned.replace(Regex(""",\s*}"""), "}")
         cleaned = cleaned.replace(Regex(""",\s*]"""), "]")
-        
+
         return cleaned
     }
 
