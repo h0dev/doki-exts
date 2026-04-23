@@ -25,7 +25,6 @@ private const val CHAPTER_PAGE_SIZE = 50
 internal class CMangaParser(context: MangaLoaderContext) :
     PagedMangaParser(context, MangaParserSource.CMANGA, PAGE_SIZE), MangaParserAuthProvider {
 
-    // Cho phép người dùng override domain (nếu Doki hỗ trợ)
     override val configKeyDomain: ConfigKey.Domain = ConfigKey.Domain("cmangax16.com")
 
     override val availableSortOrders: Set<SortOrder>
@@ -75,7 +74,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
             .getString("name")
     }
 
-    // ============================== Lấy danh sách truyện ===============================
+    // ============================== Danh sách truyện ===============================
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val url = urlBuilder().apply {
@@ -115,36 +114,42 @@ internal class CMangaParser(context: MangaLoaderContext) :
                     SortOrder.POPULARITY_TODAY -> "day"
                     SortOrder.POPULARITY_WEEK -> "week"
                     SortOrder.POPULARITY_MONTH -> "month"
-                    SortOrder.RELEVANCE -> "fire" // return duplicate manga so the app won't load second page
+                    SortOrder.RELEVANCE -> "fire"
                     else -> throw IllegalArgumentException("Order not supported ${order.name}")
                 },
             )
         }.build()
 
-        val mangaList = webClient.httpGet(url).parseJson().getJSONArray("data")
-        return mangaList.mapJSONNotNull { jo ->
-            val info = jo.parseJson("info")
-            val slug = info.getStringOrNull("url") ?: return@mapJSONNotNull null
-            val id = info.getLongOrDefault("id", 0L)
-            if (id == 0L) {
-                return@mapJSONNotNull null
-            }
+        val response = webClient.httpGet(url).parseJson()
+        val dataArray = response.optJSONArray("data")
+            ?: return emptyList()
+
+        return dataArray.mapJSONNotNull { jo ->
+            val infoRaw = jo.optString("info")
+            if (infoRaw.isNullOrEmpty()) return@mapJSONNotNull null
+            
+            val info = safeParseJson(infoRaw) ?: return@mapJSONNotNull null
+            
+            val slug = info.optString("url").takeIf { it.isNotEmpty() } ?: return@mapJSONNotNull null
+            val id = info.optLong("id", 0L)
+            if (id == 0L) return@mapJSONNotNull null
+            
             val relativeUrl = "/album/$slug-$id"
-            val title = info.getString("name").replace("\\", "")
-            val altTitle = info.optJSONArray("name_other")?.asTypedList<String>()?.map { it.replace("\\", "") }
+            val title = info.optString("name").replace("\\", "")
+            val altTitles = info.optJSONArray("name_other")?.let {
+                it.asTypedList<String>().map { name -> name.replace("\\", "") }
+            } ?: emptyList()
 
             Manga(
                 id = generateUid(id),
                 title = title.toTitleCase(),
-                altTitles = altTitle?.toSet().orEmpty(),
+                altTitles = altTitles.toSet(),
                 url = relativeUrl,
                 publicUrl = relativeUrl.toAbsoluteUrl(domain),
                 rating = RATING_UNKNOWN,
                 contentRating = null,
-                coverUrl = resolveCoverUrl(info.getStringOrNull("avatar")),
-                tags = info.optJSONArray("tags")?.asTypedList<String>()
-                    ?.mapNotNullToSet { tags.get()[it.lowercase()] }
-                    .orEmpty(),
+                coverUrl = resolveCoverUrl(info.optString("avatar")),
+                tags = extractTagsFromInfo(info),
                 state = when (info.optString("status")) {
                     "doing" -> MangaState.ONGOING
                     "done" -> MangaState.FINISHED
@@ -152,7 +157,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
                 },
                 authors = emptySet(),
                 largeCoverUrl = null,
-                description = info.getStringOrNull("detail")?.replace("\\\"", "\""),
+                description = info.optString("detail").takeIf { it.isNotEmpty() }?.replace("\\\"", "\""),
                 chapters = emptyList(),
                 source = source,
             )
@@ -164,25 +169,32 @@ internal class CMangaParser(context: MangaLoaderContext) :
     override suspend fun getDetails(manga: Manga): Manga {
         val mangaId = manga.url.substringAfterLast('-')
         val slug = manga.url.substringBeforeLast('-').substringAfterLast('/')
-        val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT)
-        df.timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+        val df = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.ROOT).apply {
+            timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+        }
 
-        // Lấy tất cả chapters (phân trang nhiều lần nếu cần)
         val allChapters = mutableListOf<MangaChapter>()
         var currentPage = 1
         var hasMore = true
 
         while (hasMore) {
             val response = webClient.httpGet(
-                "/api/chapter_list?album=$mangaId&page=$currentPage&limit=$CHAPTER_PAGE_SIZE&v=0".toAbsoluteUrl(domain)
+                "/api/chapter_list?album=$mangaId&page=$currentPage&limit=$CHAPTER_PAGE_SIZE&v=${System.currentTimeMillis() / 1000}"
+                    .toAbsoluteUrl(domain)
             ).parseJson()
-            val items = response.getJSONArray("data")
+            
+            val items = response.optJSONArray("data") ?: break
             if (items.length() == 0) break
 
             val chaptersOnPage = items.mapChapters(reversed = true) { _, jo ->
-                val chapterInfo = parseChapterInfo(jo.getString("info")) ?: return@mapChapters null
-                val chapterId = chapterInfo.optString("id").ifEmpty { jo.getLong("id_chapter").toString() }
-                val chapterNumber = chapterInfo.optString("num").toFloatOrNull() ?: -1f
+                val infoRaw = jo.optString("info")
+                if (infoRaw.isNullOrEmpty()) return@mapChapters null
+                
+                val chapterInfo = safeParseJson(infoRaw) ?: return@mapChapters null
+                val chapterId = chapterInfo.optString("id").takeIf { it.isNotEmpty() }
+                    ?: jo.optLong("id_chapter", 0L).toString()
+                val chapterNumberRaw = chapterInfo.optString("num")
+                val chapterNumber = chapterNumberRaw.toFloatOrNull() ?: -1f
                 val chapterTitle = buildChapterTitle(chapterNumber, chapterInfo.optString("name"))
                 val isLocked = isChapterLocked(chapterInfo)
 
@@ -192,7 +204,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
                     number = chapterNumber,
                     volume = 0,
                     url = "/album/$slug/chapter-$chapterNumber-$chapterId",
-                    uploadDate = df.parseSafe(chapterInfo.getString("last_update")),
+                    uploadDate = df.parseSafe(chapterInfo.optString("last_update")),
                     branch = null,
                     scanlator = null,
                     source = source,
@@ -206,7 +218,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
         return manga.copy(chapters = allChapters)
     }
 
-    // ============================== Lấy pages của chapter ===============================
+    // ============================== Pages của chapter ===============================
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val chapterId = chapter.url.substringAfterLast('-')
@@ -223,16 +235,21 @@ internal class CMangaParser(context: MangaLoaderContext) :
 
         val response = webClient.httpGet(url).parseJson()
         val imageData = response.optJSONObject("data")
+        
         if (imageData == null || imageData.optInt("status") != 1) {
-            throw IllegalStateException("Chapter is locked or requires login. Please log in via WebView.")
+            val message = response.optString("message")
+            if (message?.contains("login", ignoreCase = true) == true) {
+                throw AuthRequiredException(source, IllegalStateException("Need login to read this chapter"))
+            }
+            throw IllegalStateException("Cannot load pages: ${message ?: "Unknown error"}")
         }
 
-        val images = imageData.getJSONArray("image").asTypedList<String>()
+        val images = imageData.optJSONArray("image")?.asTypedList<String>() ?: emptyList()
         if (images.isEmpty()) {
-            throw IllegalStateException("No images found for this chapter.")
+            throw IllegalStateException("No images found for this chapter")
         }
 
-        return images.mapIndexed { index, imgUrl ->
+        return images.filterNot(::containsAdsUrl).mapIndexed { index, imgUrl ->
             MangaPage(
                 id = generateUid(imgUrl),
                 url = imgUrl,
@@ -242,7 +259,7 @@ internal class CMangaParser(context: MangaLoaderContext) :
         }
     }
 
-    // ============================== Lấy danh sách tags ===============================
+    // ============================== Tags ===============================
 
     private suspend fun getTags(): Map<String, MangaTag> {
         val tagList = webClient.httpGet("assets/json/album_tags_image.json".toAbsoluteUrl(domain)).parseJson()
@@ -265,36 +282,54 @@ internal class CMangaParser(context: MangaLoaderContext) :
     private fun resolveCoverUrl(avatar: String?): String? {
         if (avatar.isNullOrBlank()) return null
         return if (avatar.startsWith("http")) avatar
-        else "/assets/tmp/album/$avatar".toAbsoluteUrl(domain)
-    }
-
-    private fun parseChapterInfo(rawInfo: String): JSONObject? {
-        return runCatching { JSONObject(rawInfo) }.getOrNull()
+        else "/assets/tmp/album/${avatar.split("?")[0]}".toAbsoluteUrl(domain)
     }
 
     private fun buildChapterTitle(number: Float, title: String?): String {
-        val numStr = if (number == number.toInt().toFloat()) number.toInt().toString() else number.toString()
+        val numStr = if (number == number.toInt().toFloat()) number.toInt().toString() 
+                     else number.toString()
         val chapterNum = "Chương $numStr"
         if (title.isNullOrBlank()) return chapterNum
-        // Tránh trùng lặp "Chương 1: Chương 1"
-        val normalizedTitle = title.lowercase().removeSuffix(":")
-        if (normalizedTitle == "chương $numStr" ||
-            normalizedTitle == "chapter $numStr" ||
-            normalizedTitle == "chap $numStr" ||
-            normalizedTitle == numStr) {
-            return chapterNum
+        
+        val normalizedTitle = title.lowercase().trim().removeSuffix(":").removeSuffix(".")
+        val normalizedNum = numStr.lowercase()
+        
+        when (normalizedTitle) {
+            "chương $normalizedNum", "chapter $normalizedNum", 
+            "chap $normalizedNum", normalizedNum -> return chapterNum
         }
+        
         return "$chapterNum: $title"
     }
 
     private fun isChapterLocked(info: JSONObject): Boolean {
-        // Kiểm tra lock field
         val lock = info.optJSONObject("lock")
-        val hasActiveLock = lock != null && (lock.optLong("end", 0) >= System.currentTimeMillis() / 1000)
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val hasActiveLock = lock != null && (lock.optLong("end", 0) >= nowSeconds)
         val level = info.optInt("level", 0)
         val lockLevel = lock?.optInt("level", 0) ?: 0
         val lockFee = lock?.optInt("fee", 0) ?: 0
         return hasActiveLock || level != 0 || lockLevel != 0 || lockFee != 0
+    }
+
+    private fun extractTagsFromInfo(info: JSONObject): Set<MangaTag> {
+        val tagsArray = info.optJSONArray("tags")
+        if (tagsArray != null && tagsArray.length() > 0) {
+            return tagsArray.asTypedList<String>()
+                .mapNotNull { tagName -> tags.get()[tagName.lowercase()] }
+                .toSet()
+        }
+        
+        // Fallback: nếu tags là string (do JSON bị lỗi)
+        val tagsString = info.optString("tags")
+        if (tagsString.isNotEmpty() && !tagsString.startsWith("[")) {
+            val extractedTags = tagsString.split(Regex("[,，]"))
+                .map { it.trim().removeSurrounding("\"") }
+                .filter { it.isNotEmpty() }
+            return extractedTags.mapNotNull { tagName -> tags.get()[tagName.lowercase()] }.toSet()
+        }
+        
+        return emptySet()
     }
 
     private data class UserSecurity(val id: String?, val token: String?)
@@ -303,9 +338,9 @@ internal class CMangaParser(context: MangaLoaderContext) :
         val cookie = context.cookieJar.getCookies(domain).firstOrNull { it.name == "user_security" }
         val cookieValue = cookie?.value ?: return UserSecurity(null, null)
         val decoded = decodeCookieValue(cookieValue) ?: return UserSecurity(null, null)
-        val json = runCatching { JSONObject(decoded) }.getOrNull() ?: return UserSecurity(null, null)
+        val json = safeParseJson(decoded) ?: return UserSecurity(null, null)
         return UserSecurity(
-            id = json.optString("id").takeIf { it.isNotEmpty() },
+            id = json.optString("id").takeIf { it.isNotEmpty() && it != "0" },
             token = json.optString("token").takeIf { it.isNotEmpty() }
         )
     }
@@ -321,9 +356,58 @@ internal class CMangaParser(context: MangaLoaderContext) :
         return decoded
     }
 
-    // ============================== JSON extensions (giữ nguyên từ code cũ) ===============================
+    private fun containsAdsUrl(url: String): Boolean {
+        val adsUrl = "https://img.cmangapi.com/data-image/index.php"
+        val cleanUrl = url.replace("\\", "")
+        return cleanUrl.startsWith(adsUrl) || cleanUrl.contains("?v=12&data=")
+    }
 
+    // ============================== Robust JSON parsing ===============================
+
+    private fun safeParseJson(raw: String): JSONObject? {
+        if (raw.isBlank()) return null
+        
+        val sanitized = sanitizeJsonString(raw)
+        return runCatching {
+            JSONObject(sanitized)
+        }.getOrElse { error ->
+            // Log error but don't crash
+            println("JSON parse error: ${error.message}\nRaw: ${raw.take(200)}")
+            null
+        }
+    }
+
+    private fun sanitizeJsonString(raw: String): String {
+        var cleaned = raw
+        
+        // 1. Escape newlines and carriage returns
+        cleaned = cleaned.replace(Regex("""(?<!\\)\n"""), "\\n")
+        cleaned = cleaned.replace(Regex("""(?<!\\)\r"""), "\\r")
+        
+        // 2. Add missing commas between strings
+        cleaned = cleaned.replace(Regex("""("\s*")(?=[^:,\]}])"""), "\",\"")
+        
+        // 3. Add missing commas after numbers/booleans/null
+        cleaned = cleaned.replace(Regex("""(\d+|true|false|null)\s+("\w+)"""), "$1, $2")
+        
+        // 4. Ensure keys are quoted
+        cleaned = cleaned.replace(Regex("""([{,]\s*)(\w+)(\s*:)"""), "$1\"$2\"$3")
+        
+        // 5. Fix broken array items (e.g., ["a" "b"] -> ["a", "b"])
+        cleaned = cleaned.replace(Regex("""\[\s*"([^"]+)"\s+"([^"]+)"\s*\]"""), "[\"$1\", \"$2\"]")
+        
+        // 6. Fix missing commas between array items (general case)
+        cleaned = cleaned.replace(Regex("""\]\s*\["""), "],[")
+        
+        // 7. Remove trailing commas
+        cleaned = cleaned.replace(Regex(""",\s*}"""), "}")
+        cleaned = cleaned.replace(Regex(""",\s*]"""), "]")
+        
+        return cleaned
+    }
+
+    // Legacy function kept for compatibility
     private fun JSONObject.parseJson(key: String): JSONObject {
-        return JSONObject(getString(key))
+        return safeParseJson(getString(key)) ?: JSONObject()
     }
 }
