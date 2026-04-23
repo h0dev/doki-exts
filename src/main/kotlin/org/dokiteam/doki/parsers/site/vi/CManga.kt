@@ -2,6 +2,8 @@ package org.dokiteam.doki.parsers.site.vi
 
 import androidx.collection.ArrayMap
 import androidx.collection.arraySetOf
+import com.google.gson.Gson
+import com.google.gson.JsonParser
 import org.json.JSONObject
 import org.dokiteam.doki.parsers.MangaLoaderContext
 import org.dokiteam.doki.parsers.MangaParserAuthProvider
@@ -381,28 +383,34 @@ internal class CMangaParser(context: MangaLoaderContext) :
         return cleanUrl.startsWith(adsUrl) || cleanUrl.contains("?v=12&data=")
     }
 
-    // ============================== Robust JSON parsing ===============================
+    // ============================== JSON parsing (no regex) ===============================
 
+    private val gson = Gson()
+    
     private fun safeParseJson(raw: String): JSONObject? {
         if (raw.isBlank()) return null
-        val sanitized = sanitizeJsonString(raw)
-        return runCatching { JSONObject(sanitized) }.getOrNull()
-    }
-
-    private fun sanitizeJsonString(raw: String): String {
-        var cleaned = raw
         
-        cleaned = cleaned.replace(Regex("""(?<!\\)\n"""), "\\n")
-        cleaned = cleaned.replace(Regex("""(?<!\\)\r"""), "\\r")
-        cleaned = cleaned.replace(Regex("""("\s*")(?=[^:,\]}])"""), "\",\"")
-        cleaned = cleaned.replace(Regex("""(\d+|true|false|null)\s+("\w+)"""), "$1, $2")
-        cleaned = cleaned.replace(Regex("""([{,]\s*)(\w+)(\s*:)"""), "$1\"$2\"$3")
-        cleaned = cleaned.replace(Regex("""\[\s*"([^"]+)"\s+"([^"]+)"\s*\]"""), "[\"$1\", \"$2\"]")
-        cleaned = cleaned.replace(Regex("""\]\s*\["""), "],[")
-        cleaned = cleaned.replace(Regex(""",\s*}"""), "}")
-        cleaned = cleaned.replace(Regex(""",\s*]"""), "]")
-
-        return cleaned
+        // Clean basic issues
+        val cleaned = raw
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\\/", "/")
+            .replace("}\n{", "},{")
+            .replace("]\n[", "],[")
+        
+        // Try with Gson lenient parsing first
+        return runCatching {
+            val jsonElement = JsonParser.parseString(cleaned)
+            JSONObject(jsonElement.toString())
+        }.getOrElse { error1 ->
+            // Fallback to standard JSONObject
+            runCatching {
+                JSONObject(cleaned)
+            }.getOrElse { error2 ->
+                println("JSON parse failed: ${error1.message} / ${error2.message}")
+                null
+            }
+        }
     }
 
     private fun JSONObject.parseJson(key: String): JSONObject {
