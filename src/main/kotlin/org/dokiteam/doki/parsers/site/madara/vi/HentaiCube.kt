@@ -13,28 +13,17 @@ import org.dokiteam.doki.parsers.util.suspendlazy.suspendLazy
 
 @MangaSourceParser("HENTAICUBE", "CBHentai", "vi", ContentType.HENTAI)
 internal class HentaiCube(context: MangaLoaderContext) :
-    MadaraParser(context, MangaParserSource.HENTAICUBE, "2tencb.net") { // Cập nhật domain mới
+    MadaraParser(context, MangaParserSource.HENTAICUBE, "2tencb.net") {
 
     override val datePattern = "dd/MM/yyyy"
     override val postReq = true
     override val authorSearchSupported = true
     override val postDataReq = "action=manga_views&manga="
 
-    // Không lọc non-manga items (giống như Tachiyomi)
-    override val filterNonMangaItems = false
-
-    // Sử dụng "read" thay vì mặc định (có thể là "manga")
-    override val mangaSubString = "read"
-
-    private val availableTags = suspendLazy(initializer = ::fetchTags)
-
     // Regex để loại bỏ kích thước thumbnail và lấy ảnh gốc
     private val thumbnailOriginalUrlRegex = Regex("-\\d+x\\d+(\\.[a-zA-Z]+)$")
 
-    // Regex để cập nhật URL manga cũ
-    private val oldMangaUrlRegex by lazy { 
-        Regex("^https?://(?:www\\.)?[^/]+/[^/]+/") 
-    }
+    private val availableTags = suspendLazy(initializer = ::fetchTags)
 
     override suspend fun getFilterOptions() = MangaListFilterOptions(
         availableTags = availableTags.get(),
@@ -49,7 +38,7 @@ internal class HentaiCube(context: MangaLoaderContext) :
                 clear()
                 append("https://")
                 append(domain)
-                append("/tac-gia/") // Cập nhật path cho tác giả
+                append("/tac-gia/")
                 append(filter.author.lowercase().replace(" ", "-"))
 
                 if (pages > 1) {
@@ -84,9 +73,9 @@ internal class HentaiCube(context: MangaLoaderContext) :
             filter.query?.let { query ->
                 val fixedQuery = query
                     .replace("–", "-")
-                    .replace("’", "'")
-                    .replace("“", "\"")
-                    .replace("”", "\"")
+                    .replace("'", "'")
+                    .replace("\u201c", "\"") // "
+                    .replace("\u201d", "\"") // "
                     .replace("…", "...")
                 append(fixedQuery.urlEncoded())
             }
@@ -139,21 +128,16 @@ internal class HentaiCube(context: MangaLoaderContext) :
                 else -> {}
             }
         }
-        return parseMangaList(webClient.httpGet(url).parseHtml())
-    }
-
-    // Parse manga từ element và fix thumbnail URL
-    override suspend fun parseMangaFromElement(element: Element): Manga? {
-        val manga = super.parseMangaFromElement(element) ?: return null
         
-        // Fix thumbnail URL - loại bỏ kích thước để lấy ảnh gốc
-        val img = element.selectFirst("img")
-        val thumbnailUrl = img?.let { imageFromElement(it) }
-            ?.replace(thumbnailOriginalUrlRegex, "$1")
+        val doc = webClient.httpGet(url).parseHtml()
+        val mangas = parseMangaList(doc)
         
-        return manga.copy(
-            coverUrl = thumbnailUrl ?: manga.coverUrl
-        )
+        // Fix thumbnail URLs
+        return mangas.map { manga ->
+            manga.copy(
+                coverUrl = manga.coverUrl?.replace(thumbnailOriginalUrlRegex, "$1")
+            )
+        }
     }
 
     override suspend fun createMangaTag(a: Element): MangaTag? {
@@ -178,13 +162,23 @@ internal class HentaiCube(context: MangaLoaderContext) :
                 preview = null,
                 source = source,
             )
-        }.distinctBy { it.url } // Loại bỏ trang trùng lặp
+        }.distinctBy { it.url }
     }
 
-    // Fix URL manga cũ thành URL mới với mangaSubString là "read"
-    override suspend fun getMangaUrl(manga: Manga): String {
-        val url = super.getMangaUrl(manga)
-        return url.replace(oldMangaUrlRegex, "https://$domain/$mangaSubString/")
+    override suspend fun getDetails(manga: Manga): Manga {
+        val fullUrl = manga.url.toAbsoluteUrl(domain)
+        val doc = webClient.httpGet(fullUrl).parseHtml()
+        val details = super.getDetails(manga)
+        
+        // Lấy alt name (Tên khác)
+        val altName = doc.select(".post-content_item:contains(Tên khác) .summary-content")
+            .first()?.text()?.trim()
+        
+        return if (!altName.isNullOrEmpty()) {
+            details.copy(altTitle = altName)
+        } else {
+            details
+        }
     }
 
     private suspend fun fetchTags(): Set<MangaTag> {
@@ -200,34 +194,5 @@ internal class HentaiCube(context: MangaLoaderContext) :
                 source = source,
             )
         }.toSet()
-    }
-
-    // Override để xử lý alt name (Tên khác)
-    override suspend fun parseMangaDetails(doc: Document): Manga {
-        val manga = super.parseMangaDetails(doc)
-        
-        // Lấy alt name từ selector đặc biệt của HentaiCube
-        val altName = doc.select(".post-content_item:contains(Tên khác) .summary-content")
-            .first()?.text()?.trim()
-        
-        return if (!altName.isNullOrEmpty()) {
-            manga.copy(altTitle = altName)
-        } else {
-            manga
-        }
-    }
-
-    // Hỗ trợ tìm kiếm bằng URL trực tiếp
-    override suspend fun searchManga(query: String): List<Manga> {
-        // Nếu query là URL trực tiếp đến manga
-        if (query.startsWith("https://$domain/$mangaSubString/") || 
-            query.startsWith("http://$domain/$mangaSubString/")) {
-            val doc = webClient.httpGet(query).parseHtml()
-            val manga = parseMangaDetails(doc)
-            return listOf(manga)
-        }
-        
-        // Nếu không, thực hiện tìm kiếm bình thường
-        return super.searchManga(query)
     }
 }
