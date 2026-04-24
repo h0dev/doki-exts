@@ -1,162 +1,228 @@
 package org.dokiteam.doki.parsers.site.madara.vi
 
 import org.jsoup.nodes.Element
+import org.jsoup.nodes.Document
 import org.dokiteam.doki.parsers.MangaLoaderContext
-import org.dokiteam.doki.parsers.MangaSourceParser
+import org.dokiteam.doki.parsers.MangaParserSource
 import org.dokiteam.doki.parsers.exception.ParseException
 import org.dokiteam.doki.parsers.model.*
 import org.dokiteam.doki.parsers.site.madara.MadaraParser
 import org.dokiteam.doki.parsers.util.*
 import org.dokiteam.doki.parsers.util.suspendlazy.getOrNull
 import org.dokiteam.doki.parsers.util.suspendlazy.suspendLazy
+import org.dokiteam.doki.parsers.util.PreferencesHelper
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
-// Do not use "hentaicb.sbs" domain, may cause duplicate tags!
 @MangaSourceParser("HENTAICUBE", "CBHentai", "vi", ContentType.HENTAI)
 internal class HentaiCube(context: MangaLoaderContext) :
-	MadaraParser(context, MangaParserSource.HENTAICUBE, "hentaicube.xyz") {
+    MadaraParser(context, MangaParserSource.HENTAICUBE, "hentaicube.xyz"),
+    ConfigurableSource {
 
-	override val datePattern = "dd/MM/yyyy"
-	override val postReq = true
-	override val authorSearchSupported = true
-	override val postDataReq = "action=manga_views&manga="
+    override val datePattern = "dd/MM/yyyy"
+    override val postReq = true
+    override val authorSearchSupported = true
+    override val postDataReq = "action=manga_views&manga="
 
-	private val availableTags = suspendLazy(initializer = ::fetchTags)
+    // Tachiyomi: filterNonMangaItems = false
+    override val filterNonMangaItems = false
 
-	override suspend fun getFilterOptions() = MangaListFilterOptions(
-		availableTags = availableTags.get(),
-	)
+    // Tachiyomi: mangaSubString = "read"
+    override val mangaSubString = "read"
 
-	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val pages = page + 1
+    // Tachiyomi: altNameSelector
+    override val altNameSelector = ".post-content_item:contains(Tên khác) .summary-content"
 
-		val url = buildString {
-			if (!filter.author.isNullOrEmpty()) {
-				clear()
-				append("https://")
-				append(domain)
-				append("/tacgia/")
-				append(filter.author.lowercase().replace(" ", "-"))
+    // Tachiyomi: URL search prefix
+    private val URL_SEARCH_PREFIX = "url:"
 
-				if (pages > 1) {
-					append("/page/")
-					append(pages.toString())
-				}
+    // Tachiyomi: Regex patterns
+    private val thumbnailOriginalUrlRegex = Regex("-\\d+x\\d+(\\.[a-zA-Z]+)$")
+    private val oldMangaUrlRegex by lazy { Regex("^https?://$domain/\\w+/") }
+    private val domainRegex = Regex("""^https?://(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9]{1,6}$""")
 
-				append("/?m_orderby=")
-				when (order) {
-					SortOrder.POPULARITY -> append("views")
-					SortOrder.UPDATED -> append("latest")
-					SortOrder.NEWEST -> append("new-manga")
-					SortOrder.ALPHABETICAL -> {}
-					SortOrder.RATING -> append("trending")
-					SortOrder.RELEVANCE -> {}
-					else -> append("latest") // default
-				}
-				return@buildString
-			}
+    // Preferences cho dynamic domain
+    private val preferences: PreferencesHelper = PreferencesHelper(context, source)
+    private var _cachedBaseUrl: String? = null
 
-			append("https://")
-			append(domain)
+    // Support dynamic domain từ Tachiyomi
+    override val baseUrl: String
+        get() = _cachedBaseUrl ?: preferences.getString(BASE_URL_PREF, "https://$domain") ?: "https://$domain"
 
-			if (pages > 1) {
-				append("/page/")
-				append(pages.toString())
-			}
+    // Session manager để xử lý redirect
+    private var sessionDomain: String = domain
 
-			append("/?s=")
+    init {
+        // Khởi tạo preferences với domain mặc định
+        if (!preferences.contains(BASE_URL_PREF)) {
+            preferences.putString(BASE_URL_PREF, "https://$domain")
+        }
+        
+        // Lưu domain gốc
+        if (!preferences.contains(DEFAULT_BASE_URL_PREF)) {
+            preferences.putString(DEFAULT_BASE_URL_PREF, "https://$domain")
+        }
+        
+        _cachedBaseUrl = preferences.getString(BASE_URL_PREF, "https://$domain")
+    }
 
-			filter.query?.let {
-				append(filter.query.urlEncoded())
-			}
+    private val availableTags = suspendLazy(initializer = ::fetchTags)
 
-			append("&post_type=wp-manga")
+    override suspend fun getFilterOptions() = MangaListFilterOptions(
+        availableTags = availableTags.get(),
+    )
 
-			if (filter.tags.isNotEmpty()) {
-				filter.tags.forEach {
-					append("&genre[]=")
-					append(it.key)
-				}
-			}
+    // Tachiyomi: Xử lý URL search prefix và special characters
+    override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+        // Xử lý URL search prefix (giống Tachiyomi)
+        if (filter.query?.startsWith(URL_SEARCH_PREFIX) == true) {
+            val mangaSlug = filter.query.substringAfter(URL_SEARCH_PREFIX)
+            val mangaUrl = "$baseUrl/$mangaSubString/$mangaSlug/"
+            val doc = webClient.httpGet(mangaUrl).parseHtml()
+            val manga = parseMangaDetails(doc, mangaUrl)
+            return listOf(manga)
+        }
 
-			filter.states.forEach {
-				append("&status[]=")
-				when (it) {
-					MangaState.ONGOING -> append("on-going")
-					MangaState.FINISHED -> append("end")
-					MangaState.ABANDONED -> append("canceled")
-					MangaState.PAUSED -> append("on-hold")
-					MangaState.UPCOMING -> append("upcoming")
-					else -> throw IllegalArgumentException("$it not supported")
-				}
-			}
+        // Xử lý special characters như Tachiyomi
+        val queryFixed = filter.query
+            ?.replace("–", "-")
+            ?.replace("’", "'")
+            ?.replace("“", "\"")
+            ?.replace("”", "\"")
+            ?.replace("…", "...")
 
-			filter.contentRating.oneOrThrowIfMany()?.let {
-				append("&adult=")
-				append(
-					when (it) {
-						ContentRating.SAFE -> "0"
-						ContentRating.ADULT -> "1"
-						else -> ""
-					},
-				)
-			}
+        val updatedFilter = MangaListFilter(
+            query = queryFixed,
+            tags = filter.tags,
+            states = filter.states,
+            contentRating = filter.contentRating,
+            year = filter.year,
+            author = filter.author,
+            includeOperator = filter.includeOperator,
+            excludeOperator = filter.excludeOperator
+        )
 
-			if (filter.year != 0) {
-				append("&release=")
-				append(filter.year.toString())
-			}
+        return super.getListPage(page, order, updatedFilter)
+    }
 
-			append("&m_orderby=")
-			when (order) {
-				SortOrder.POPULARITY -> append("views")
-				SortOrder.UPDATED -> append("latest")
-				SortOrder.NEWEST -> append("new-manga")
-				SortOrder.ALPHABETICAL -> append("alphabet")
-				SortOrder.RATING -> append("rating")
-				SortOrder.RELEVANCE -> {}
-				else -> {}
-			}
-		}
-		return parseMangaList(webClient.httpGet(url).parseHtml())
-	}
+    // Tachiyomi: Override popularMangaFromElement để xử lý thumbnail
+    override suspend fun parseMangaList(document: Document): List<Manga> {
+        val mangas = super.parseMangaList(document)
+        return mangas.map { manga ->
+            manga.copy(
+                thumbnailUrl = manga.thumbnailUrl?.replace(thumbnailOriginalUrlRegex, "$1")
+            )
+        }
+    }
 
-	override suspend fun createMangaTag(a: Element): MangaTag? {
-		val allTags = availableTags.getOrNull().orEmpty()
-		val title = a.text().replace(Regex("\\(\\d+\\)"), "").trim() // force trim to remove space
-		// compare to avoid duplicate tags with the same title
-		return allTags.find {
-			it.title.trim().equals(title, ignoreCase = true) // try to search with trim
-		}
-	}
+    // Tachiyomi: Fix old manga URLs
+    override fun getMangaUrl(manga: Manga): String {
+        val url = super.getMangaUrl(manga)
+        return url.replace(oldMangaUrlRegex, "$baseUrl/$mangaSubString/")
+    }
 
-	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val fullUrl = chapter.url.toAbsoluteUrl(domain)
-		val doc = webClient.httpGet(fullUrl).parseHtml()
-		val root = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
-			?: throw ParseException("Root not found", fullUrl)
-		return root.select("img").map { img ->
-			val url = img.requireSrc().toRelativeUrl(domain)
-			MangaPage(
-				id = generateUid(url),
-				url = url,
-				preview = null,
-				source = source,
-			)
-		}
-	}
+    // Tachiyomi: Distinct pages
+    override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+        val fullUrl = chapter.url.toAbsoluteUrl(domain)
+        val doc = webClient.httpGet(fullUrl).parseHtml()
+        val root = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
+            ?: throw ParseException("Root not found", fullUrl)
+        return root.select("img").map { img ->
+            val url = img.requireSrc().toRelativeUrl(domain)
+            MangaPage(
+                id = generateUid(url),
+                url = url,
+                preview = null,
+                source = source,
+            )
+        }.distinctBy { it.url } // Tachiyomi: distinctBy imageUrl
+    }
 
-	private suspend fun fetchTags(): Set<MangaTag> {
-		val doc = webClient.httpGet("https://$domain/the-loai-genres").parseHtml()
-		val elements = doc.select("ul.list-unstyled li a")
-		return elements.mapToSet { element ->
-			val href = element.attr("href")
-			val key = href.substringAfter("/theloai/").removeSuffix("/")
-			val title = element.text().replace(Regex("\\(\\d+\\)"), "").trim() // force trim
-			MangaTag(
-				key = key,
-				title = title,
-				source = source,
-			)
-		}.toSet()
-	}
+    override suspend fun createMangaTag(a: Element): MangaTag? {
+        val allTags = availableTags.getOrNull().orEmpty()
+        val title = a.text().replace(Regex("\\(\\d+\\)"), "").trim()
+        return allTags.find {
+            it.title.trim().equals(title, ignoreCase = true)
+        }
+    }
+
+    // Tachiyomi: Fetch tags với xử lý dynamic domain
+    private suspend fun fetchTags(): Set<MangaTag> {
+        val url = "${baseUrl}/the-loai-genres"
+        val doc = webClient.httpGet(url).parseHtml()
+        val elements = doc.select("ul.list-unstyled li a")
+        return elements.mapToSet { element ->
+            val href = element.attr("href")
+            val key = href.substringAfter("/theloai/").removeSuffix("/")
+            val title = element.text().replace(Regex("\\(\\d+\\)"), "").trim()
+            MangaTag(
+                key = key,
+                title = title,
+                source = source,
+            )
+        }.toSet()
+    }
+
+    // Tachiyomi: Xử lý redirect và cập nhật domain
+    suspend fun handleRedirect(url: String): String {
+        var currentUrl = url
+        var redirectCount = 0
+        val maxRedirects = 5
+
+        while (redirectCount < maxRedirects) {
+            val response = webClient.httpGet(currentUrl, followRedirects = false)
+            
+            if (response.isRedirect()) {
+                val newUrl = response.header("Location") ?: break
+                val newUrlHttp = newUrl.toHttpUrl()
+                val redirectedDomain = "${newUrlHttp.scheme}://${newUrlHttp.host}"
+                
+                if (redirectedDomain != baseUrl) {
+                    _cachedBaseUrl = redirectedDomain
+                    preferences.putString(BASE_URL_PREF, redirectedDomain)
+                }
+                
+                currentUrl = newUrl
+                redirectCount++
+            } else {
+                break
+            }
+        }
+        
+        if (redirectCount >= maxRedirects) {
+            throw ParseException("Too many redirects: $maxRedirects", url)
+        }
+        
+        return currentUrl
+    }
+
+    // Tachiyomi: Setup preferences cho dynamic domain
+    override fun setupPreferences(): List<Preference> {
+        return listOf(
+            Preference.EditTextPreference(
+                key = BASE_URL_PREF,
+                title = "Ghi đè URL cơ sở",
+                summary = "Dành cho sử dụng tạm thời, cập nhật tiện ích sẽ xóa cài đặt.\n" +
+                    "Để trống để sử dụng URL mặc định.\n" +
+                    "Hiện tại sử dụng: $baseUrl",
+                defaultValue = "https://$domain",
+                dialogTitle = "Ghi đè URL cơ sở",
+                dialogMessage = "Mặc định: https://$domain",
+                validator = { str ->
+                    if (str.isBlank()) true
+                    else runCatching { str.toHttpUrl() }.isSuccess && 
+                         domainRegex.matchEntire(str) != null
+                },
+                onPreferenceChanged = { newValue ->
+                    _cachedBaseUrl = newValue.ifBlank { null }
+                    preferences.putString(BASE_URL_PREF, newValue)
+                    true
+                }
+            )
+        )
+    }
+
+    companion object {
+        private const val DEFAULT_BASE_URL_PREF = "defaultBaseUrl"
+        private const val BASE_URL_PREF = "overrideBaseUrl"
+    }
 }
