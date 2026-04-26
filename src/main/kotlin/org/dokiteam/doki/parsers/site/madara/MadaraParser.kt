@@ -618,9 +618,9 @@ internal abstract class MadaraParser(
 			"div.post-content_item:contains(État), div.post-content_item:contains(حالة العمل), div.post-content_item:contains(Estado), div.post-content_item:contains(สถานะ)," +
 			"div.post-content_item:contains(Stato), div.post-content_item:contains(Durum), div.post-content_item:contains(Statüsü), div.post-content_item:contains(Статус)," +
 			"div.post-content_item:contains(状态), div.post-content_item:contains(الحالة)"
-	protected open val selectAlt =
+	protected open val selectAltName =
 		".post-content_item:contains(Alt) .summary-content, .post-content_item:contains(Nomes alternativos: ) .summary-content"
-	protected open val altNameSelectorDefault = selectAlt
+	protected open val altNameSelector = selectAltName
 	protected open val selectSeriesType = ".post-content_item:contains(Type) .summary-content"
 
 	protected open fun imageFromElement(element: Element): String? = when {
@@ -675,7 +675,7 @@ internal abstract class MadaraParser(
 			}
 		}
 
-		val alt = doc.body().select(selectAlt).firstOrNull()?.tableValue()?.textOrNull()
+		val alt = doc.body().select(selectAltName).firstOrNull()?.tableValue()?.textOrNull()
 
 		val seriesType = doc.selectFirst(selectSeriesType)?.textOrNull()
 		val seriesTypeTag = if (!seriesType.isNullOrEmpty() && seriesType != "-" && seriesType != "Updating") {
