@@ -743,8 +743,15 @@ internal abstract class MadaraParser(
 	protected open suspend fun loadChapters(mangaUrl: String, document: Document): List<MangaChapter> {
 		val chaptersWrapper = document.select("div[id^=manga-chapters-holder]")
 
+		if (postReq) {
+			val mangaId = chaptersWrapper.attr("data-id")
+			val url = "https://$domain/wp-admin/admin-ajax.php"
+			val postData = postDataReq + mangaId
+			return parseChaptersFromAjax(webClient.httpPost(url, postData).parseHtml(), document)
+		}
+
 		if (chaptersWrapper.isNullOrEmpty()) {
-			return getChaptersFromAjax(mangaUrl, document)
+			return xhrChaptersNew(mangaUrl, document)
 		}
 
 		val mangaId = chaptersWrapper.attr("data-id")
@@ -776,7 +783,7 @@ internal abstract class MadaraParser(
 		return "${mangaUrl.removeSuffix("/")}/ajax/chapters"
 	}
 
-	protected open suspend fun getChaptersFromAjax(mangaUrl: String, document: Document): List<MangaChapter> {
+	protected open suspend fun xhrChaptersNew(mangaUrl: String, document: Document): List<MangaChapter> {
 		val url = "${mangaUrl.removeSuffix("/")}/ajax/chapters/"
 		return parseChaptersFromAjax(webClient.httpPost(url, emptyMap()).parseHtml(), document)
 	}
