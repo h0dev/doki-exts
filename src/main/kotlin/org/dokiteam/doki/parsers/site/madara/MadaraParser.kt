@@ -150,6 +150,9 @@ internal abstract class MadaraParser(
 	// Filter non-manga items
 	protected open val filterNonMangaItems = true
 
+	// manga subdirectory path
+	protected open val mangaSubString = "manga"
+
 	// Genre fetching support (keiyoushi style)
 	protected open var genresList: List<Genre> = emptyList()
 	private var genresFetched: Boolean = false
@@ -617,6 +620,7 @@ internal abstract class MadaraParser(
 			"div.post-content_item:contains(状态), div.post-content_item:contains(الحالة)"
 	protected open val selectAlt =
 		".post-content_item:contains(Alt) .summary-content, .post-content_item:contains(Nomes alternativos: ) .summary-content"
+	protected open val altNameSelectorDefault = selectAlt
 	protected open val selectSeriesType = ".post-content_item:contains(Type) .summary-content"
 
 	protected open fun imageFromElement(element: Element): String? = when {
@@ -674,19 +678,22 @@ internal abstract class MadaraParser(
 		val alt = doc.body().select(selectAlt).firstOrNull()?.tableValue()?.textOrNull()
 
 		val seriesType = doc.selectFirst(selectSeriesType)?.textOrNull()
-		if (!seriesType.isNullOrEmpty() && seriesType != "-" && seriesType != "Updating") {
-			tags = tags + MangaTag(
+		val seriesTypeTag = if (!seriesType.isNullOrEmpty() && seriesType != "-" && seriesType != "Updating") {
+			MangaTag(
 				key = seriesType.lowercase().replace(" ", "-"),
 				title = seriesType,
 				source = source,
 			)
-		}
+		} else null
+
+		val baseTags = doc.body().select(selectGenre).mapToSet { a -> createMangaTag(a) }.filterNotNull().toSet()
+		val finalTags = if (seriesTypeTag != null) baseTags + seriesTypeTag else baseTags
 
 		manga.copy(
 			title = doc.selectFirst("h1")?.textOrNull() ?: manga.title,
 			url = href,
 			publicUrl = href.toAbsoluteUrl(domain),
-			tags = doc.body().select(selectGenre).mapToSet { a -> createMangaTag(a) }.filterNotNull().toSet(),
+			tags = finalTags,
 			description = desc,
 			altTitles = setOfNotNull(alt),
 			state = state,
@@ -744,13 +751,13 @@ internal abstract class MadaraParser(
 		val doc = if (useNewChapterEndpoint || oldChapterEndpointDisabled) {
 			webClient.httpPost(xhrChaptersRequest(mangaUrl), emptyMap()).parseHtml()
 		} else {
-			val postData = oldXhrChaptersPostData(mangaId)
-			webClient.httpPost(oldXhrChaptersRequest(mangaId), postData).parseHtml()
-		}
-
-		if (!useNewChapterEndpoint && doc.statusCode == 400) {
-			oldChapterEndpointDisabled = true
-			doc = webClient.httpPost(xhrChaptersRequest(mangaUrl), emptyMap()).parseHtml()
+			try {
+				val postData = oldXhrChaptersPostData(mangaId)
+				webClient.httpPost(oldXhrChaptersRequest(mangaId), postData).parseHtml()
+			} catch (e: Exception) {
+				oldChapterEndpointDisabled = true
+				webClient.httpPost(xhrChaptersRequest(mangaUrl), emptyMap()).parseHtml()
+			}
 		}
 
 		return parseChaptersFromAjax(doc, document)
