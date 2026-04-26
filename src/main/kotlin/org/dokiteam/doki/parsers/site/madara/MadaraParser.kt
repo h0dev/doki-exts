@@ -113,6 +113,51 @@ internal abstract class MadaraParser(
 	protected open val stylePage = "?style=list"
 	protected open val postReq = false
 
+	// LoadMore support (keiyoushi style)
+	protected open val useLoadMoreRequest = LoadMoreStrategy.AutoDetect
+
+	protected enum class LoadMoreStrategy {
+		AutoDetect,
+		Always,
+		Never,
+	}
+
+	private var loadMoreRequestDetected = LoadMoreDetection.Pending
+
+	private enum class LoadMoreDetection {
+		Pending,
+		True,
+		False,
+	}
+
+	protected fun detectLoadMore(document: Document) {
+		if (useLoadMoreRequest == LoadMoreStrategy.AutoDetect &&
+			loadMoreRequestDetected == LoadMoreDetection.Pending
+		) {
+			loadMoreRequestDetected = when (document.selectFirst("nav.navigation-ajax") != null) {
+				true -> LoadMoreDetection.True
+				false -> LoadMoreDetection.False
+			}
+		}
+	}
+
+	protected fun useLoadMoreRequest(): Boolean = when (useLoadMoreRequest) {
+		LoadMoreStrategy.Always -> true
+		LoadMoreStrategy.Never -> false
+		else -> loadMoreRequestDetected == LoadMoreDetection.True
+	}
+
+	// Filter non-manga items
+	protected open val filterNonMangaItems = true
+
+	// Genre fetching support (keiyoushi style)
+	protected open var genresList: List<Genre> = emptyList()
+	private var genresFetched: Boolean = false
+	private var fetchGenresAttempts: Int = 0
+	protected open val fetchGenres: Boolean = true
+
+	protected class Genre(val name: String, val id: String = name)
+
 	init {
 		paginator.firstPage = 0
 		searchPaginator.firstPage = 0
@@ -130,6 +175,11 @@ internal abstract class MadaraParser(
 
 	@JvmField
 	protected val ongoing = scatterSetOf(
+		"OnGoing", "Продолжается", "Updating", "Em Lançamento", "Em lançamento", "Em andamento",
+		"Em Andamento", "En cours", "En Cours", "En cours de publication", "Ativo", "Lançando", "Đang Tiến Hành", "Còn Nữa", "Devam Ediyor",
+		"Devam ediyor", "In Corso", "In Arrivo", "مستمرة", "مستمر", "En Curso", "En curso", "Emision",
+		"Curso", "En marcha", "Publicandose", "Publicándose", "En emision", "连载中", "Em Lançamento", "Devam Ediyo",
+		"Đang làm", "Em postagem", "Devam Eden", "Em progresso", "Em curso", "Atualizações Semanais",
 		"مستمرة",
 		"en curso",
 		"ongoing",
@@ -164,6 +214,9 @@ internal abstract class MadaraParser(
 
 	@JvmField
 	protected val finished = scatterSetOf(
+		"Completed", "Completo", "Completado", "Concluído", "Concluido", "Finalizado",
+		"Achevé", "Terminé", "Hoàn Thành", "مكتملة", "مكتمل", "已完结",
+		"Tamamlandı", "Đã hoàn thành", "Завершено", "Tamamlanan", "Complété",
 		"completed",
 		"complete",
 		"completo",
@@ -195,6 +248,8 @@ internal abstract class MadaraParser(
 
 	@JvmField
 	protected val abandoned = scatterSetOf(
+		"Canceled", "Cancelado", "İptal Edildi", "Güncel", "Đã hủy", "ملغي",
+		"Abandonné", "Заброшено", "Annulé",
 		"canceled",
 		"cancelled",
 		"cancelado",
@@ -213,6 +268,16 @@ internal abstract class MadaraParser(
 		"en espera",
 		"en pause",
 		"en attente",
+		"On Hold",
+		"Pausado",
+		"En espera",
+		"Durduruldu",
+		"Beklemede",
+		"Đang chờ",
+		"متوقف",
+		"En Pause",
+		"Заморожено",
+		"En attente",
 	)
 
 	@JvmField
@@ -552,6 +617,25 @@ internal abstract class MadaraParser(
 			"div.post-content_item:contains(状态), div.post-content_item:contains(الحالة)"
 	protected open val selectAlt =
 		".post-content_item:contains(Alt) .summary-content, .post-content_item:contains(Nomes alternativos: ) .summary-content"
+	protected open val selectSeriesType = ".post-content_item:contains(Type) .summary-content"
+
+	protected open fun imageFromElement(element: Element): String? = when {
+		element.hasAttr("data-src") -> element.attr("abs:data-src")
+		element.hasAttr("data-lazy-src") -> element.attr("abs:data-lazy-src")
+		element.hasAttr("srcset") -> element.attr("abs:srcset").getSrcSetImage()
+		element.hasAttr("data-cfsrc") -> element.attr("abs:data-cfsrc")
+		element.hasAttr("data-manga-src") -> element.attr("abs:data-manga-src")
+		else -> element.attr("abs:src")
+	}
+
+	protected open fun String.getSrcSetImage(): String? {
+		val urlRegex = Regex("""https?://[^\s]+""")
+		return this.split(" ")
+			.filter { urlRegex.matches(it) }
+			.maxByOrNull { it }
+	}
+
+	protected open fun processThumbnail(url: String?, fromSearch: Boolean = false): String? = url
 
 	protected open suspend fun createMangaTag(a: Element): MangaTag? {
 		return MangaTag(
@@ -588,6 +672,15 @@ internal abstract class MadaraParser(
 		}
 
 		val alt = doc.body().select(selectAlt).firstOrNull()?.tableValue()?.textOrNull()
+
+		val seriesType = doc.selectFirst(selectSeriesType)?.textOrNull()
+		if (!seriesType.isNullOrEmpty() && seriesType != "-" && seriesType != "Updating") {
+			tags = tags + MangaTag(
+				key = seriesType.lowercase().replace(" ", "-"),
+				title = seriesType,
+				source = source,
+			)
+		}
 
 		manga.copy(
 			title = doc.selectFirst("h1")?.textOrNull() ?: manga.title,
@@ -636,19 +729,53 @@ internal abstract class MadaraParser(
 	}
 
 	protected open val postDataReq = "action=manga_get_chapters&manga="
+	protected open val useNewChapterEndpoint: Boolean = false
+	private var oldChapterEndpointDisabled: Boolean = false
 
 	protected open suspend fun loadChapters(mangaUrl: String, document: Document): List<MangaChapter> {
-		val doc = if (postReq) {
-			val mangaId = document.select("div#manga-chapters-holder").attr("data-id")
-			val url = "https://$domain/wp-admin/admin-ajax.php"
-			val postData = postDataReq + mangaId
-			webClient.httpPost(url, postData).parseHtml()
-		} else {
-			val url = mangaUrl.toAbsoluteUrl(domain).removeSuffix('/') + "/ajax/chapters/"
-			webClient.httpPost(url, emptyMap()).parseHtml()
+		val chaptersWrapper = document.select("div[id^=manga-chapters-holder]")
+
+		if (chaptersWrapper.isNullOrEmpty()) {
+			return getChaptersFromAjax(mangaUrl, document)
 		}
+
+		val mangaId = chaptersWrapper.attr("data-id")
+
+		val doc = if (useNewChapterEndpoint || oldChapterEndpointDisabled) {
+			webClient.httpPost(xhrChaptersRequest(mangaUrl), emptyMap()).parseHtml()
+		} else {
+			val postData = oldXhrChaptersPostData(mangaId)
+			webClient.httpPost(oldXhrChaptersRequest(mangaId), postData).parseHtml()
+		}
+
+		if (!useNewChapterEndpoint && doc.statusCode == 400) {
+			oldChapterEndpointDisabled = true
+			doc = webClient.httpPost(xhrChaptersRequest(mangaUrl), emptyMap()).parseHtml()
+		}
+
+		return parseChaptersFromAjax(doc, document)
+	}
+
+	protected open fun oldXhrChaptersRequest(mangaId: String): String {
+		return "https://$domain/wp-admin/admin-ajax.php"
+	}
+
+	protected open fun oldXhrChaptersPostData(mangaId: String): String {
+		return postDataReq + mangaId
+	}
+
+	protected open fun xhrChaptersRequest(mangaUrl: String): String {
+		return "${mangaUrl.removeSuffix("/")}/ajax/chapters"
+	}
+
+	protected open suspend fun getChaptersFromAjax(mangaUrl: String, document: Document): List<MangaChapter> {
+		val url = "${mangaUrl.removeSuffix("/")}/ajax/chapters/"
+		return parseChaptersFromAjax(webClient.httpPost(url, emptyMap()).parseHtml(), document)
+	}
+
+	private suspend fun parseChaptersFromAjax(ajaxDoc: Document, originalDoc: Document): List<MangaChapter> {
 		val dateFormat = SimpleDateFormat(datePattern, sourceLocale)
-		return doc.select(selectChapter).mapChapters(reversed = true) { i, li ->
+		return ajaxDoc.select(selectChapter).mapChapters(reversed = true) { i, li ->
 			val a = li.selectFirstOrThrow("a")
 			val href = a.attrAsRelativeUrl("href")
 			val link = href + stylePage

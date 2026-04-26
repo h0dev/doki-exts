@@ -10,7 +10,6 @@ import org.dokiteam.doki.parsers.util.*
 import org.dokiteam.doki.parsers.util.suspendlazy.getOrNull
 import org.dokiteam.doki.parsers.util.suspendlazy.suspendLazy
 
-// Do not use "hentaicb.sbs" domain, may cause duplicate tags!
 @MangaSourceParser("HENTAICUBE", "CBHentai", "vi", ContentType.HENTAI)
 internal class HentaiCube(context: MangaLoaderContext) :
 	MadaraParser(context, MangaParserSource.HENTAICUBE, "hentaicube.xyz") {
@@ -19,6 +18,17 @@ internal class HentaiCube(context: MangaLoaderContext) :
 	override val postReq = true
 	override val authorSearchSupported = true
 	override val postDataReq = "action=manga_views&manga="
+
+	override val mangaSubString = "read"
+	override val filterNonMangaItems = false
+
+	private val thumbnailOriginalUrlRegex = Regex("-\\d+x\\d+(\\.[a-zA-Z]+)$")
+
+	override fun processThumbnail(url: String?, fromSearch: Boolean): String? {
+		return url?.replace(thumbnailOriginalUrlRegex, "$1")
+	}
+
+	override val altNameSelector = ".post-content_item:contains(Tên khác) .summary-content"
 
 	private val availableTags = suspendLazy(initializer = ::fetchTags)
 
@@ -129,20 +139,21 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		}
 	}
 
-	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 		val root = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
 			?: throw ParseException("Root not found", fullUrl)
 		return root.select("img").map { img ->
-			val url = img.requireSrc().toRelativeUrl(domain)
+			val url = imageFromElement(img)?.toRelativeUrl(domain)
+				?: img.requireSrc().toRelativeUrl(domain)
 			MangaPage(
 				id = generateUid(url),
 				url = url,
 				preview = null,
 				source = source,
 			)
-		}
+		}.distinctBy { it.url }
 	}
 
 	private suspend fun fetchTags(): Set<MangaTag> {
