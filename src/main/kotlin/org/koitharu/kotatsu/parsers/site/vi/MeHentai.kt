@@ -1,0 +1,264 @@
+package org.koitharu.kotatsu.parsers.site.vi
+
+import okhttp3.Headers
+import org.koitharu.kotatsu.parsers.MangaLoaderContext
+import org.koitharu.kotatsu.parsers.MangaSourceParser
+import org.koitharu.kotatsu.parsers.config.ConfigKey
+import org.koitharu.kotatsu.parsers.core.PagedMangaParser
+import org.koitharu.kotatsu.parsers.model.*
+import org.koitharu.kotatsu.parsers.util.*
+import java.util.*
+import java.util.concurrent.TimeUnit
+
+@MangaSourceParser("MEHENTAI", "MeHentai", "vi", type = ContentType.HENTAI)
+internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.MEHENTAI, 60) {
+
+    override val configKeyDomain = ConfigKey.Domain("mehentai.top")
+
+    override fun getRequestHeaders(): Headers = Headers.Builder()
+        .add("Referer", "https://$domain/")
+        .build()
+
+    override fun onCreateConfig(keys: MutableCollection<ConfigKey<*>>) {
+        super.onCreateConfig(keys)
+        keys.add(userAgentKey)
+    }
+
+    override val availableSortOrders: Set<SortOrder> = EnumSet.of(
+        SortOrder.UPDATED,
+        SortOrder.POPULARITY,
+        SortOrder.NEWEST,
+        SortOrder.ALPHABETICAL,
+        SortOrder.ALPHABETICAL_DESC
+    )
+
+    override val filterCapabilities: MangaListFilterCapabilities
+        get() = MangaListFilterCapabilities(
+            isSearchSupported = true,
+        )
+
+    override suspend fun getFilterOptions() = MangaListFilterOptions(
+        availableTags = availableTags(),
+        availableStates = EnumSet.noneOf(MangaState::class.java)
+    )
+
+    override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+        val url = buildString {
+            append("https://")
+            append(domain)
+
+            when {
+                // Ưu tiên tìm kiếm (từ search.html)
+                !filter.query.isNullOrEmpty() -> {
+                    append("/search")
+                    append("?q=")
+                    append(filter.query.urlEncoded())
+                    if (page > 1) {
+                        append("&page=")
+                        append(page)
+                    }
+                    // Trang search không hỗ trợ sorting
+                }
+                // Filter theo thể loại (từ main.html nav)
+                filter.tags.isNotEmpty() -> {
+                    val tag = filter.tags.first()
+                    append("/the-loai/")
+                    append(tag.key)
+                    if (page > 1) {
+                        append("?page=")
+                        append(page)
+                    }
+                    // Sẽ thêm sorting ở dưới
+                }
+                // Trang danh sách/trang chủ (từ main.html)
+                else -> {
+                    append("/danh-sach") // Trang danh sách chính
+                    append("?page=")
+                    append(page)
+                }
+            }
+
+            // Thêm tham số sorting nếu không phải là trang tìm kiếm
+            if (filter.query.isNullOrEmpty()) {
+                append(if (contains("?")) "&" else "?")
+                append("order_by=")
+                append(
+                    when (order) {
+                        SortOrder.POPULARITY -> "view"
+                        SortOrder.NEWEST -> "created_at"
+                        SortOrder.ALPHABETICAL -> "name"
+                        SortOrder.ALPHABETICAL_DESC -> "name"
+                        else -> "update_time" // Mặc định
+                    }
+                )
+                append("&sort=")
+                append(
+                    when (order) {
+                        SortOrder.ALPHABETICAL -> "asc"
+                        else -> "desc" // Đa số các kiểu sort khác đều là desc
+                    }
+                )
+            }
+        }
+
+        val doc = webClient.httpGet(url).parseHtml()
+
+        val containerSelector = "div#halim-advanced-widget-6-ajax-box"
+        val itemSelector = "article.thumb.grid-item"
+
+        return doc.select("$containerSelector $itemSelector").map { article ->
+            val a = article.selectFirstOrThrow("a.halim-thumb")
+            val href = a.attrAsRelativeUrl("href")
+            val img = a.selectFirstOrThrow("figure img.lazyload")
+            val coverUrl = img.attrOrNull("data-src") ?: img.attr("src")
+
+            Manga(
+                id = generateUid(href),
+                title = article.selectFirstOrThrow("h2.entry-title").text(),
+                altTitles = emptySet(),
+                url = href,
+                publicUrl = href.toAbsoluteUrl(domain),
+                rating = RATING_UNKNOWN,
+                contentRating = ContentRating.ADULT,
+                coverUrl = coverUrl.orEmpty(),
+                tags = setOf(),
+                state = null,
+                authors = emptySet(),
+                source = source,
+            )
+        }
+    }
+
+    // =================================================================
+    // HÀM ĐÃ ĐƯỢC CHỈNH SỬA
+    // =================================================================
+    override suspend fun getDetails(manga: Manga): Manga {
+        val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
+
+        val author = root.selectFirst("span.directors i.fa-solid.fa-user + span")?.text()
+            ?.takeIf { it.isNotBlank() && it != "Đang Cập Nhật" }
+
+        val statusText = root.selectFirst("div.thong-tin span:has(i.fa-sharp.fa-solid.fa-fan) + span span")?.text()
+        val state = when (statusText) {
+            "Truyện Full" -> MangaState.FINISHED
+            "Đang Cập Nhật" -> MangaState.ONGOING
+            else -> null
+        }
+
+        val tags = root.select("span.category:has(i.fa-solid.fa-tag) + span a").mapToSet { a ->
+            MangaTag(
+                key = a.attr("href").removeSuffix("/").substringAfterLast('/'),
+                title = a.text().removePrefix("- ").trim(),
+                source = source,
+            )
+        }
+
+        val description = root.selectFirst("article[id^=post-].item-content p")?.text()
+
+        // Khởi tạo helper parser
+        val chapterDateParser = RelativeDateParser(Locale("vi"))
+
+        // *** FIX: Đã sửa lại selector ***
+        // Chọn <a> là con trực tiếp (>) của ul#list-chap
+        // vì HTML của trang này là <ul> <a> <li> </li> </a> </ul>
+        val chapters = root.select("ul#list-chap > a")
+            .mapChapters(reversed = true) { i, a -> // list-chap đảo ngược (chap 5 -> 1)
+                val href = a.attrAsRelativeUrl("href")
+                
+                // Lấy thông tin từ các span bên trong thẻ <a>
+                val name = a.selectFirst("span.chap-name")?.text().orEmpty()
+                val dateText = a.selectFirst("span[style*=text-align]")?.text()
+
+                MangaChapter(
+                    id = generateUid(href),
+                    title = name,
+                    number = name.substringAfter("Chapter ").toFloatOrNull() ?: (i + 1).toFloat(),
+                    volume = 0,
+                    url = href,
+                    scanlator = null,
+                    uploadDate = chapterDateParser.parse(dateText) ?: 0L,
+                    branch = null,
+                    source = source,
+                )
+            }
+
+        return manga.copy(
+            altTitles = emptySet(),
+            state = state,
+            tags = tags,
+            authors = setOfNotNull(author),
+            description = description,
+            chapters = chapters,
+        )
+    }
+    // =================================================================
+    // KẾT THÚC HÀM CHỈNH SỬA
+    // =================================================================
+
+    override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+        val fullUrl = chapter.url.toAbsoluteUrl(domain)
+        val doc = webClient.httpGet(fullUrl).parseHtml()
+
+        val imageElements = doc.select("div.contentimg div.imageload img.simg")
+
+        return imageElements.map { img ->
+            val url = img.attrOrNull("data-sv3")
+                ?: img.attrOrNull("data-sv1")
+                ?: img.attr("src")
+
+            MangaPage(
+                id = generateUid(url),
+                url = url,
+                preview = null,
+                source = source,
+            )
+        }
+    }
+
+    private suspend fun availableTags(): Set<MangaTag> {
+        val url = "https://$domain/"
+        val doc = webClient.httpGet(url).parseHtml()
+
+        return doc.select("ul.dropdown-menu li a[href*='/the-loai/']").map { a ->
+            val key = a.attr("href").removeSuffix("/").substringAfterLast('/')
+            val title = a.text().removePrefix("- ").trim()
+            MangaTag(
+                key = key,
+                title = title,
+                source = source,
+            )
+        }.toSet()
+    }
+
+    /**
+     * Helper class để parse các chuỗi ngày tương đối (VD: "4 ngày trước")
+     */
+    private class RelativeDateParser(private val locale: Locale) {
+        fun parse(relativeDate: String?): Long? {
+            if (relativeDate.isNullOrBlank()) return null
+            
+            try {
+                val now = Calendar.getInstance()
+                val parts = relativeDate.lowercase(locale).split(" ")
+
+                if (parts.size < 2) return null
+
+                val amount = parts[0].toIntOrNull() ?: return null
+                val unit = parts[1]
+
+                when (unit) {
+                    "phút" -> now.add(Calendar.MINUTE, -amount)
+                    "giờ" -> now.add(Calendar.HOUR, -amount)
+                    "ngày" -> now.add(Calendar.DAY_OF_YEAR, -amount)
+                    "tuần" -> now.add(Calendar.WEEK_OF_YEAR, -amount)
+                    "tháng" -> now.add(Calendar.MONTH, -amount)
+                    "năm" -> now.add(Calendar.YEAR, -amount)
+                    else -> return null
+                }
+                return now.timeInMillis
+            } catch (e: Exception) {
+                return null
+            }
+        }
+    }
+}

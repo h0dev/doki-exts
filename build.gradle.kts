@@ -9,6 +9,7 @@ plugins {
 }
 
 group = "org.usagi"
+<<<<<<< HEAD
 version = "1.0.0"
 
 ksp {
