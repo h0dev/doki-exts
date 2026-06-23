@@ -9,8 +9,8 @@ and depends on [core-parsers](https://github.com/UsagiApp/core-parsers).
 ## Build
 
 ```bash
-./gradlew jar          # Build plugin JAR
-./gradlew buildJar     # Build + DEX for Android
+./gradlew jar          # Build plugin JAR (plain JVM, for local testing)
+./gradlew buildJar     # Build + DEX for Android (requires Android SDK + ANDROID_HOME)
 ```
 
 ## Usage

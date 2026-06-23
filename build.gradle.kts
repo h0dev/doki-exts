@@ -64,6 +64,7 @@ tasks.jar {
 }
 
 tasks.register<DexPluginTask>("dexJar") {
+    dependsOn(tasks.jar)
     inputJar.set(tasks.jar.flatMap { it.archiveFile })
     outputJar.set(layout.buildDirectory.file("libs/plugins.jar"))
 }
