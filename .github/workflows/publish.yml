@@ -1,0 +1,51 @@
+name: Build and Publish
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'src/**'
+      - 'build.gradle.kts'
+      - 'plugins-ksp/**'
+      - 'gradle/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Grant execute permission
+        run: chmod +x gradlew
+
+      - name: Build JAR
+        run: ./gradlew jar
+
+      - name: Get version
+        id: version
+        run: echo "tag=$(date +'v%Y%m%d.%H%M')" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Release ${{ steps.version.outputs.tag }}
+          body: |
+            Auto-built parser plugin
+            - Build time: ${{ github.event.repository.updated_at }}
+            - Commit: ${{ github.sha }}
+          files: |
+            build/libs/*.jar
+          generate_release_notes: true
