@@ -23,15 +23,17 @@ internal class HentaiVnPlus(context: MangaLoaderContext) :
 	override val authorSearchSupported = true
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val pages = page + 1
 
 		val url = buildString {
-			if (!filter.author.isNullOrEmpty()) {
+			val author = filter.author
+			if (!author.isNullOrEmpty()) {
 				clear()
 				append("https://")
 				append(domain)
 				append("/tac-gia/")
-				append(filter.author.lowercase().replace(" ", "-"))
+				append(author.lowercase().replace(" ", "-"))
 
 				if (pages > 1) {
 					append("/page/")
@@ -62,7 +64,7 @@ internal class HentaiVnPlus(context: MangaLoaderContext) :
 			append("/?s=")
 
 			filter.query?.let {
-				append(filter.query.urlEncoded())
+				append(it.urlEncoded())
 			}
 
 			append("&post_type=wp-manga")

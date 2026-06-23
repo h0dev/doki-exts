@@ -37,8 +37,9 @@ internal class Hentai18VN(context: MangaLoaderContext) :
 	)
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		return when {
-			!filter.query.isNullOrEmpty() -> {
+			!q.isNullOrEmpty() -> {
 				if (page > 1) {
 					return emptyList()
 				}

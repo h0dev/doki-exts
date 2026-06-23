@@ -295,6 +295,7 @@ internal abstract class MadaraParser(
 	protected open val listUrl = "manga/"
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		if (withoutAjax) {
 			val pages = page + 1
 
@@ -309,7 +310,7 @@ internal abstract class MadaraParser(
 				append("/?s=")
 
 				filter.query?.let {
-					append(filter.query.urlEncoded())
+					append(it.urlEncoded())
 				}
 
 				append("&post_type=wp-manga")
@@ -351,7 +352,7 @@ internal abstract class MadaraParser(
 				}
 
 				if (!filter.author.isNullOrEmpty()) {
-					filter.author.let {
+					filter.author?.let {
 						append("&author=")
 						// should be like "minamida-usuke"
 						append(it.lowercase().replace(" ", "-"))
@@ -384,7 +385,7 @@ internal abstract class MadaraParser(
 			payload["page"] = page.toString()
 
 			filter.query?.let {
-				payload["vars[s]"] = filter.query.urlEncoded()
+				payload["vars[s]"] = it.urlEncoded()
 			}
 
 			if (filter.tags.isNotEmpty()) {
@@ -412,7 +413,7 @@ internal abstract class MadaraParser(
 			}
 
 			// Support author
-			//  filter.author.let {
+			//  filter.author?.let {
 			//	payload["vars[tax_query][3][taxonomy]"] = "wp-manga-author"
 			//	payload["vars[tax_query][3][field]"] = "name"
 			//	payload["vars[tax_query][3][terms][0]"] = filter.author

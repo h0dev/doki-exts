@@ -53,10 +53,11 @@ internal class VcomycsParser(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		if (!filter.query.isNullOrEmpty()) {
+		val q = filter.query
+		if (!q.isNullOrEmpty()) {
 			if (page > 1) return emptyList()
 
-			val payload = "action=searchtax&keyword=${filter.query.urlEncoded()}"
+			val payload = "action=searchtax&keyword=${q.urlEncoded()}"
 			return webClient.httpPost("/wp-admin/admin-ajax.php".toAbsoluteUrl(domain), payload)
 				.parseJson().getJSONArray("data")
 				.mapJSONNotNull { jo ->

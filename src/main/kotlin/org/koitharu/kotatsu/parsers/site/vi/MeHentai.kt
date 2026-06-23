@@ -43,16 +43,17 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
         val url = buildString {
             append("https://")
             append(domain)
 
             when {
                 // Ưu tiên tìm kiếm (từ search.html)
-                !filter.query.isNullOrEmpty() -> {
+                !q.isNullOrEmpty() -> {
                     append("/search")
                     append("?q=")
-                    append(filter.query.urlEncoded())
+                    append(q.urlEncoded())
                     if (page > 1) {
                         append("&page=")
                         append(page)
@@ -79,7 +80,7 @@ internal class MeHentai(context: MangaLoaderContext) : PagedMangaParser(context,
             }
 
             // Thêm tham số sorting nếu không phải là trang tìm kiếm
-            if (filter.query.isNullOrEmpty()) {
+            if (q.isNullOrEmpty()) {
                 append(if (contains("?")) "&" else "?")
                 append("order_by=")
                 append(

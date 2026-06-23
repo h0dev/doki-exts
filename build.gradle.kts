@@ -28,7 +28,6 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
 
 kotlin {
     jvmToolchain(11)
-    explicitApi()
     sourceSets.main.get().kotlin.srcDirs("build/generated/ksp/main/kotlin")
 }
 
