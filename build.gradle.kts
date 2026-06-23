@@ -1,15 +1,15 @@
 import tasks.ReportGenerateTask
+import tasks.DexPluginTask
 
 plugins {
     `java-library`
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
-    `maven-publish`
 }
 
-group = "org.dokiteam"
-version = "1.0"
+group = "org.usagi"
+version = "1.0.0"
 
 ksp {
     arg("summaryOutputDir", "${project.projectDir}/.github")
@@ -21,27 +21,19 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
             "-opt-in=kotlin.RequiresOptIn",
             "-opt-in=kotlin.contracts.ExperimentalContracts",
             "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi",
-            "-opt-in=org.dokiteam.doki.parsers.InternalParsersApi",
+            "-opt-in=org.koitharu.kotatsu.parsers.InternalParsersApi",
         ))
     }
 }
 
 kotlin {
-    jvmToolchain(8)
+    jvmToolchain(11)
     explicitApi()
     sourceSets.main.get().kotlin.srcDirs("build/generated/ksp/main/kotlin")
 }
 
 tasks.withType<Test> {
     useJUnitPlatform()
-}
-
-publishing {
-    publications {
-        create<MavenPublication>("mavenJava") {
-            from(components["java"])
-        }
-    }
 }
 
 dependencies {
@@ -52,11 +44,12 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okio)
     implementation(libs.json)
-    implementation(libs.androidx.collection)
-    implementation(libs.nanohttpd)
     implementation(libs.gson)
+    implementation(libs.androidx.collection)
 
-    ksp(project(":doki-ksp"))
+    implementation(libs.core.parsers)
+
+    ksp(project(":plugins-ksp"))
 
     testImplementation(libs.bundles.junit)
     testImplementation(libs.kotlinx.coroutines.test)
@@ -64,3 +57,12 @@ dependencies {
 }
 
 tasks.register<ReportGenerateTask>("generateTestsReport")
+
+tasks.register<DexPluginTask>("dexJar") {
+    inputJar.set(tasks.jar.get().archiveFile)
+    outputJar.set(layout.buildDirectory.file("libs/plugins.jar"))
+}
+
+tasks.register("buildJar") {
+    dependsOn("jar", "dexJar")
+}
