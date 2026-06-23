@@ -40,15 +40,16 @@ internal class ManhwaX10(context: MangaLoaderContext) : PagedMangaParser(context
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
         val url = buildString {
             append("https://")
             append(domain)
 
             when {
                 // 1. Ưu tiên tìm kiếm (từ search.html)
-                !filter.query.isNullOrEmpty() -> {
+                !q.isNullOrEmpty() -> {
                     append("/tim-kiem?key=")
-                    append(filter.query.urlEncoded())
+                    append(q.urlEncoded())
                     append("&page=")
                     append(page)
                 }

@@ -39,12 +39,13 @@ internal class SayHentai(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val url = buildString {
 			append("https://")
 			append(domain)
-			if (!filter.query.isNullOrEmpty()) {
+			if (!q.isNullOrEmpty()) {
 				append("/search?s=")
-				append(filter.query.urlEncoded())
+				append(q.urlEncoded())
 				append("&page=")
 				append(page.toString())
 			} else {

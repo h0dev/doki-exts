@@ -58,6 +58,7 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
         val url = buildString {
             append("https://$domain/tim-kiem-nang-cao")
 
@@ -91,8 +92,8 @@ internal class ThienThaiTruyen(context: MangaLoaderContext) : PagedMangaParser(c
             appendParam("sort=$sortValue")
 
             // 4. Query (Search name)
-            if (!filter.query.isNullOrEmpty()) {
-                appendParam("name=${filter.query.urlEncoded()}")
+            if (!q.isNullOrEmpty()) {
+                appendParam("name=${q.urlEncoded()}")
             }
 
             // 5. Page

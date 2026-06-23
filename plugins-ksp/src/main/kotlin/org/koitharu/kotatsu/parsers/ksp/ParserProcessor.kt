@@ -81,10 +81,10 @@ class ParserProcessor(
 			package org.koitharu.kotatsu.parsers.model
 			
 			public enum class MangaParserSource(
-				public val title: String,
-				public val locale: String,
-				public val contentType: ContentType,
-				public val isBroken: Boolean,
+				public override val title: String,
+				public override val locale: String,
+				public override val contentType: ContentType,
+				public override val isBroken: Boolean,
 			): MangaSource {
 			
 			""".trimIndent(),
@@ -141,7 +141,8 @@ class ParserProcessor(
 			val name = annotation.arguments.single { it.name?.asString() == "name" }.value as String
 			val title = annotation.arguments.single { it.name?.asString() == "title" }.value as String
 			val locale = annotation.arguments.single { it.name?.asString() == "locale" }.value as String
-			val type = annotation.arguments.single { it.name?.asString() == "type" }.value
+			val typeRaw = annotation.arguments.single { it.name?.asString() == "type" }.value
+			val type = typeRaw.toString().substringAfterLast('.')
 			val localeString = "\"$locale\""
 			val localeObj = if (locale.isEmpty()) null else Locale(locale)
 			val localeTitle = localeObj?.getDisplayLanguage(localeObj)

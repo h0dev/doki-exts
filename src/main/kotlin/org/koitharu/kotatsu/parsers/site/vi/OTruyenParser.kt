@@ -78,13 +78,14 @@ internal class OTruyenParser(context: MangaLoaderContext) :
 	// org/koitharu/kotatsu/parsers/site/vi/OTruyenParser.kt
 
 override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
     val url = buildString {
         append("https://")
         append(domain)
         when {
-            !filter.query.isNullOrEmpty() -> {
+            !q.isNullOrEmpty() -> {
                 append("/v1/api/tim-kiem?keyword=")
-                append(filter.query.urlEncoded())
+                append(q.urlEncoded())
                 append("&page=")
                 append(page.toString())
             }

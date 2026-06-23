@@ -54,6 +54,7 @@ internal class TruyenQQ(context: MangaLoaderContext) : PagedMangaParser(context,
 	)
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		requestMutex.withLock {
 			val currentTime = System.currentTimeMillis()
 			val timeSinceLastRequest = currentTime - lastRequestTime
@@ -64,13 +65,13 @@ internal class TruyenQQ(context: MangaLoaderContext) : PagedMangaParser(context,
 		}
 
 		val url = when {
-			!filter.query.isNullOrEmpty() -> {
+			!q.isNullOrEmpty() -> {
 				buildString {
 					append("https://")
 					append(domain)
 					append("/tim-kiem/trang-$page.html")
 					append("?q=")
-					append(filter.query.urlEncoded())
+					append(q.urlEncoded())
 				}
 			}
 

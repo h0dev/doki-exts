@@ -52,15 +52,16 @@ internal abstract class LilianaParser(
 		)
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val url = buildString {
 			append("https://")
 			append(domain)
 			when {
-				!filter.query.isNullOrEmpty() -> {
+				!q.isNullOrEmpty() -> {
 					append("/search/")
 					append(page)
 					append("/?keyword=")
-					append(filter.query.urlEncoded())
+					append(q.urlEncoded())
 				}
 
 				else -> {

@@ -67,6 +67,7 @@ internal abstract class MadthemeParser(
 	protected open val datePattern = "MMM dd, yyyy"
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val url = buildString {
 			append("https://")
 			append(domain)
@@ -78,7 +79,7 @@ internal abstract class MadthemeParser(
 
 			filter.query?.let {
 				append("&q=")
-				append(filter.query.urlEncoded())
+				append(it.urlEncoded())
 			}
 
 			append("&sort=")

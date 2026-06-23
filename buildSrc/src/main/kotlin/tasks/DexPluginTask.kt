@@ -18,8 +18,8 @@ abstract class DexPluginTask : DefaultTask() {
 
     @TaskAction
     fun dexJar() {
-        project.exec {
-            commandLine(
+        project.exec { spec ->
+            spec.commandLine(
                 d8Path,
                 "--release",
                 "--output", outputJar.get().asFile.absolutePath,

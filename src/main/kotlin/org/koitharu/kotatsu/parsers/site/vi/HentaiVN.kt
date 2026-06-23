@@ -93,11 +93,12 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
     )
 
     override suspend fun getList(offset: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
         val page = (offset / 24f).toIntUp() + 1
         val apiUrl = buildString {
             append("/api/library/")
             when {
-                !filter.query.isNullOrEmpty() -> append("search?q=${filter.query.urlEncoded()}&page=$page")
+                !q.isNullOrEmpty() -> append("search?q=${q.urlEncoded()}&page=$page")
                 filter.tags.isNotEmpty() -> {
                     val included = filter.tags.joinToString(",") { "(${it.key},1)" }
                     append("advanced-search?g=${included.urlEncoded()}&page=$page")

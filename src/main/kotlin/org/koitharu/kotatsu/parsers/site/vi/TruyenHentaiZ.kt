@@ -45,14 +45,15 @@ internal class TruyenHentaiZ(context: MangaLoaderContext) : PagedMangaParser(con
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
         val url = buildString {
             append("https://")
             append(domain)
 
             when {
                 // 1. Ưu tiên tìm kiếm
-                !filter.query.isNullOrEmpty() -> {
-                    append("/page/$page?s=${filter.query.urlEncoded()}")
+                !q.isNullOrEmpty() -> {
+                    append("/page/$page?s=${q.urlEncoded()}")
                 }
                 
                 // 2. Lọc theo thể loại

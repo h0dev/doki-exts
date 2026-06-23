@@ -81,15 +81,16 @@ internal abstract class WpComicsParser(
 	protected open val datePattern = "dd/MM/yy"
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val response =
 			when {
-				!filter.query.isNullOrEmpty() -> {
+				!q.isNullOrEmpty() -> {
 					val url = buildString {
 						append("https://")
 						append(domain)
 						append(listUrl)
 						append("?keyword=")
-						append(filter.query.urlEncoded())
+						append(q.urlEncoded())
 						append("&page=")
 						append(page.toString())
 					}

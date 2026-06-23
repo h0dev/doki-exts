@@ -165,13 +165,14 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
     }
 
     override suspend fun getList(offset: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
         val page = (offset / MANGA_PER_PAGE.toFloat()).toIntUp() + 1
         
         val apiUrl = buildString {
             append("/api/manga?")
             when {
-                !filter.query.isNullOrEmpty() -> {
-                    append("q=${filter.query.urlEncoded()}")
+                !q.isNullOrEmpty() -> {
+                    append("q=${q.urlEncoded()}")
                 }
                 filter.tags.isNotEmpty() -> {
                     val genreKey = filter.tags.first().key.urlEncoded()

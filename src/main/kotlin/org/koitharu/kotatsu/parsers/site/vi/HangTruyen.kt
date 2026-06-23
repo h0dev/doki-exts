@@ -43,6 +43,7 @@ internal class HangTruyen(context: MangaLoaderContext) : PagedMangaParser(contex
 	)
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val url = buildString {
 			append("/tim-kiem?page=")
 			append(page)
@@ -77,9 +78,9 @@ internal class HangTruyen(context: MangaLoaderContext) : PagedMangaParser(contex
 				else -> "view_desc"
 			})
 
-			if (!filter.query.isNullOrEmpty()) {
+			if (!q.isNullOrEmpty()) {
 				append("&keyword=")
-                val encodedQuery = filter.query.splitByWhitespace().joinToString(separator = "+") { part ->
+                val encodedQuery = q.splitByWhitespace().joinToString(separator = "+") { part ->
 					part.urlEncoded()
 				}
 				append(encodedQuery)

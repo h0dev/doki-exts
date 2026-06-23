@@ -28,7 +28,6 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
 
 kotlin {
     jvmToolchain(11)
-    explicitApi()
     sourceSets.main.get().kotlin.srcDirs("build/generated/ksp/main/kotlin")
 }
 
@@ -45,6 +44,7 @@ dependencies {
     implementation(libs.okio)
     implementation(libs.json)
     implementation(libs.gson)
+    implementation(libs.androidx.collection)
     implementation(libs.core.parsers)
 
     ksp(project(":plugins-ksp"))
