@@ -1,4 +1,4 @@
-package org.dokiteam.doki.parsers.ksp
+package org.koitharu.kotatsu.parsers.ksp
 
 import com.google.devtools.ksp.isAbstract
 import com.google.devtools.ksp.processing.*
@@ -20,7 +20,7 @@ class ParserProcessor(
 	private val sourceNamePattern = Regex("[A-Z_][A-Z0-9_]{3,}")
 
 	override fun process(resolver: Resolver): List<KSAnnotated> {
-		val symbols = resolver.getSymbolsWithAnnotation("org.dokiteam.doki.parsers.MangaSourceParser")
+		val symbols = resolver.getSymbolsWithAnnotation("org.koitharu.kotatsu.parsers.MangaSourceParser")
 		val ret = symbols.filterNot { it.validate() }.toList()
 		if (!symbols.iterator().hasNext()) {
 			return ret
@@ -30,7 +30,7 @@ class ParserProcessor(
 			try {
 				codeGenerator.createNewFile(
 					dependencies = dependencies,
-					packageName = "org.dokiteam.doki.parsers",
+					packageName = "org.koitharu.kotatsu.parsers",
 					fileName = "MangaParserFactory",
 				)
 			} catch (e: FileAlreadyExistsException) {
@@ -41,7 +41,7 @@ class ParserProcessor(
 			try {
 				codeGenerator.createNewFile(
 					dependencies = dependencies,
-					packageName = "org.dokiteam.doki.parsers.model",
+					packageName = "org.koitharu.kotatsu.parsers.model",
 					fileName = "MangaSource",
 				)
 			} catch (e: FileAlreadyExistsException) {
@@ -67,10 +67,10 @@ class ParserProcessor(
 		}
 		factoryWriter?.write(
 			"""
-			package org.dokiteam.doki.parsers
+			package org.koitharu.kotatsu.parsers
 
-			import org.dokiteam.doki.parsers.model.MangaParserSource
-			import org.dokiteam.doki.parsers.core.MangaParserWrapper
+			import org.koitharu.kotatsu.parsers.model.MangaParserSource
+			import org.koitharu.kotatsu.parsers.core.MangaParserWrapper
 
 			internal fun MangaParserSource.newParser(context: MangaLoaderContext): MangaParser = when (this) {
 			
@@ -78,7 +78,7 @@ class ParserProcessor(
 		)
 		sourcesWriter?.write(
 			"""
-			package org.dokiteam.doki.parsers.model
+			package org.koitharu.kotatsu.parsers.model
 			
 			public enum class MangaParserSource(
 				public val title: String,
