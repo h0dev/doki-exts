@@ -12,6 +12,7 @@ kotlinx-serialization = "1.7.3"
 androidx-collection = "1.6.0"
 
 junit = "5.14.3"
+junit-platform = "1.14.3"
 quickjs = "1.1.0"
 core-parsers = "0.0.3"
 
@@ -32,6 +33,7 @@ core-parsers = { module = "com.github.UsagiApp:core-parsers", version.ref = "cor
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher", version.ref = "junit-platform" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 quickjs = { module = "io.webfolder:quickjs", version.ref = "quickjs" }
 
@@ -41,4 +43,4 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 
 [bundles]
-junit = ["junit-api", "junit-engine", "junit-params"]
+junit = ["junit-api", "junit-engine", "junit-params", "junit-platform-launcher"]

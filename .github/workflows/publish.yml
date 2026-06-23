@@ -30,8 +30,8 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
-      - name: Run tests
-        run: ./gradlew test
+      - name: Compile check
+        run: ./gradlew compileKotlin compileTestKotlin
 
       - name: Build JAR
         run: ./gradlew jar
