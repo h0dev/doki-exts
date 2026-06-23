@@ -8,6 +8,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.koitharu.kotatsu.parsers.bitmap.Bitmap
 import org.koitharu.kotatsu.parsers.config.MangaSourceConfig
+import org.koitharu.kotatsu.parsers.model.MangaParserSource
 import org.koitharu.kotatsu.parsers.model.MangaSource
 import org.koitharu.kotatsu.parsers.network.UserAgents
 import org.koitharu.kotatsu.parsers.util.await
@@ -54,6 +55,11 @@ internal object MangaLoaderContextMock : MangaLoaderContext() {
 	}
 
 	override fun getDefaultUserAgent(): String = UserAgents.FIREFOX_MOBILE
+
+	override fun newParserInstance(source: MangaSource): MangaParser {
+		check(source is MangaParserSource) { "Unknown manga source: $source" }
+		return source.newParser(this)
+	}
 
 	override fun redrawImageResponse(response: Response, redraw: (Bitmap) -> Bitmap): Response {
 		val srcImage = response.requireBody().byteStream().use(ImageIO::read)
