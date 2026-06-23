@@ -56,7 +56,7 @@ dependencies {
     implementation(libs.nanohttpd)
     implementation(libs.gson)
 
-    ksp(project(":doki-ksp"))
+    ksp(project(":plugins-ksp"))
 
     testImplementation(libs.bundles.junit)
     testImplementation(libs.kotlinx.coroutines.test)
