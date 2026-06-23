@@ -34,8 +34,7 @@ json = { module = "org.json:json", version.ref = "json" }
 gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
 androidx-collection = { module = "androidx.collection:collection", version.ref = "androidx-collection" }
 
-# KSP Processor (project dependency)
-doki-ksp = { module = "org.dokiteam:doki-ksp" }
+# KSP processor (replaced by plugins-ksp project dependency)
 
 # Testing
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }

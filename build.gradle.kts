@@ -8,7 +8,7 @@ plugins {
     `maven-publish`
 }
 
-group = "org.dokiteam"
+group = "org.usagi"
 version = "1.0"
 
 ksp {
@@ -21,7 +21,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
             "-opt-in=kotlin.RequiresOptIn",
             "-opt-in=kotlin.contracts.ExperimentalContracts",
             "-opt-in=kotlinx.coroutines.ExperimentalCoroutinesApi",
-            "-opt-in=org.dokiteam.doki.parsers.InternalParsersApi",
+            "-opt-in=org.koitharu.kotatsu.parsers.InternalParsersApi",
         ))
     }
 }
@@ -56,7 +56,7 @@ dependencies {
     implementation(libs.nanohttpd)
     implementation(libs.gson)
 
-    ksp(project(":doki-ksp"))
+    ksp(project(":plugins-ksp"))
 
     testImplementation(libs.bundles.junit)
     testImplementation(libs.kotlinx.coroutines.test)
