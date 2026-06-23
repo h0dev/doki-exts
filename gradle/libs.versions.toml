@@ -13,7 +13,6 @@ androidx-collection = "1.6.0"
 
 junit = "5.14.3"
 quickjs = "1.1.0"
-
 core-parsers = "0.0.3"
 
 [libraries]

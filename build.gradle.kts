@@ -45,6 +45,7 @@ dependencies {
     implementation(libs.json)
     implementation(libs.gson)
     implementation(libs.androidx.collection)
+
     implementation(libs.core.parsers)
 
     ksp(project(":plugins-ksp"))

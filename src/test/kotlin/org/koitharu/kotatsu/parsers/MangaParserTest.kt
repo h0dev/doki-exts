@@ -255,7 +255,7 @@ internal class MangaParserTest {
 		val parser = context.newParserInstance(source)
 		if (parser is MangaParserAuthProvider) {
 			val username = parser.getUsername()
-			assert(username.isNotBlank()) { "Username is blank" }
+			assert(username?.isNotBlank() == true) { "Username is blank" }
 			println("Signed in to ${source.name} as $username")
 		}
 	}
