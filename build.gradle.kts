@@ -9,7 +9,6 @@ plugins {
 }
 
 group = "org.usagi"
-<<<<<<< HEAD
 version = "1.0.0"
 
 ksp {
@@ -46,8 +45,6 @@ dependencies {
     implementation(libs.okio)
     implementation(libs.json)
     implementation(libs.gson)
-    implementation(libs.androidx.collection)
-
     implementation(libs.core.parsers)
 
     ksp(project(":plugins-ksp"))
