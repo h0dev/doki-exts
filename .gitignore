@@ -5,3 +5,4 @@ build/
 *.jar
 .kotlin/
 local.properties
+.hive/

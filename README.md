@@ -4,7 +4,7 @@ This library provides a collection of manga parsers for convenient access to man
 JVM and Android applications. This project is based on [kotatsu-parsers](https://github.com/KotatsuApp/kotatsu-parsers)
 and depends on [core-parsers](https://github.com/UsagiApp/core-parsers).
 
-![Sources count](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2FDokiTeam%2Fdoki-exts%2Frefs%2Fheads%2Fmain%2F.github%2Fsummary.yaml&query=total&label=manga%20sources&color=%23E9321C) ![License](https://img.shields.io/github/license/KotatsuApp/Kotatsu)
+![Sources count](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2FUsagiApp%2Fplugins%2Frefs%2Fheads%2Fmain%2F.github%2Fsummary.yaml&query=total&label=manga%20sources&color=%23E9321C) ![License](https://img.shields.io/github/license/KotatsuApp/Kotatsu)
 
 ## Build
 
@@ -15,12 +15,12 @@ and depends on [core-parsers](https://github.com/UsagiApp/core-parsers).
 
 ## Usage
 
-1. Download the latest JAR from [GitHub Releases](https://github.com/DokiTeam/doki-exts/releases)
+1. Download the latest JAR from [GitHub Releases](https://github.com/UsagiApp/plugins/releases)
 
 2. Usage in code
 
    ```kotlin
-   val parser = mangaLoaderContext.newParserInstance(MangaParserSource.MANGADEX)
+   val parser = mangaLoaderContext.newParserInstance(MangaParserSource.CMANGA)
    ```
 
    `mangaLoaderContext` is an implementation of the `MangaLoaderContext` class.

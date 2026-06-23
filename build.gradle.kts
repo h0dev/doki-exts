@@ -28,7 +28,6 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
 
 kotlin {
     jvmToolchain(11)
-    sourceSets.main.get().kotlin.srcDirs("build/generated/ksp/main/kotlin")
 }
 
 tasks.withType<Test> {
@@ -58,7 +57,7 @@ dependencies {
 tasks.register<ReportGenerateTask>("generateTestsReport")
 
 tasks.register<DexPluginTask>("dexJar") {
-    inputJar.set(tasks.jar.get().archiveFile)
+    inputJar.set(tasks.jar.flatMap { it.archiveFile })
     outputJar.set(layout.buildDirectory.file("libs/plugins.jar"))
 }
 

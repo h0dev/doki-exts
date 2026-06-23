@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up JDK 17
+      - name: Set up JDK 17  # Building for JVM 11 target
         uses: actions/setup-java@v4
         with:
           java-version: '17'
@@ -29,6 +29,9 @@ jobs:
 
       - name: Grant execute permission
         run: chmod +x gradlew
+
+      - name: Run tests
+        run: ./gradlew test
 
       - name: Build JAR
         run: ./gradlew jar
