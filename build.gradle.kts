@@ -56,11 +56,18 @@ dependencies {
 
 tasks.register<ReportGenerateTask>("generateTestsReport")
 
+tasks.jar {
+    archiveFileName.set("raw.jar")
+    exclude("android/**")
+    exclude("androidx/annotation/**")
+    exclude("androidx/preference/**")
+}
+
 tasks.register<DexPluginTask>("dexJar") {
     inputJar.set(tasks.jar.flatMap { it.archiveFile })
     outputJar.set(layout.buildDirectory.file("libs/plugins.jar"))
 }
 
 tasks.register("buildJar") {
-    dependsOn("jar", "dexJar")
+    dependsOn("dexJar")
 }
