@@ -34,7 +34,7 @@ jobs:
         run: ./gradlew compileKotlin compileTestKotlin
 
       - name: Build JAR
-        run: ./gradlew jar
+        run: ./gradlew buildJar
 
       - name: Get version
         id: version
@@ -50,5 +50,5 @@ jobs:
             - Build time: ${{ github.event.repository.updated_at }}
             - Commit: ${{ github.sha }}
           files: |
-            build/libs/*.jar
+            build/libs/plugins.jar
           generate_release_notes: true
