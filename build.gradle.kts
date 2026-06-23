@@ -55,6 +55,7 @@ dependencies {
     implementation(libs.androidx.collection)
     implementation(libs.nanohttpd)
     implementation(libs.gson)
+    implementation(libs.core.parsers)
 
     ksp(project(":plugins-ksp"))
 

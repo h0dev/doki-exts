@@ -17,6 +17,7 @@ nanohttpd = "2.3.1"
 # Testing
 junit = "5.10.1"
 quickjs = "1.1.0"
+core-parsers = "main-SNAPSHOT"
 
 [libraries]
 # Kotlin & Coroutines
@@ -42,6 +43,7 @@ junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref 
 junit-params = { module = "org.junit.jupiter:junit-jupiter-params", version.ref = "junit" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 quickjs = { module = "io.webfolder:quickjs", version.ref = "quickjs" }
+core-parsers = { module = "com.github.UsagiApp:core-parsers", version.ref = "core-parsers" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
