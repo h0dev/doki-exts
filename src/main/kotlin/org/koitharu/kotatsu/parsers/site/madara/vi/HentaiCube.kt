@@ -229,60 +229,38 @@ internal class HentaiCube(context: MangaLoaderContext) :
 	// ── Page (Image) Loading ─────────────────────────────────────────
 	// The site uses #manga-secure-reader with lazy-loaded images (data-src).
 	// Fall back to standard selectors if the custom reader is not found.
-	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+		override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 
-		// Try #manga-secure-reader first (custom Madara reader with JS-loaded images)
-		// NOTE: Element.src() checks data-src FIRST regardless of CSS class, unlike
-		// imageFromElement() which only checks data-src for .wp-manga-chapter-img elements.
-		// This site uses plain <img> tags with data-src (lazy-load) but NO special class.
-		val secureReader = doc.body().selectFirst("#manga-secure-reader")
-		if (secureReader != null) {
-			val images = secureReader.select("img").mapNotNull { img ->
-				val imgUrl = img.src()
-				if (imgUrl != null) {
+		// Try reading-content + manga-secure-reader (JS-loaded images via data-src)
+		val containers = listOfNotNull(
+			doc.body().selectFirst(".reading-content"),
+			doc.body().selectFirst("#manga-secure-reader"),
+		)
+		for (container in containers) {
+			val images = container.select("img").mapNotNull { img ->
+				// Prefer data-src (full-res lazy-load) then src, exclude blank placeholders
+				val url = img.attr("data-src").takeIf { it.isNotEmpty() }
+					?: img.attr("src").takeIf { it.isNotEmpty() && !it.contains("blank") }
+					?: img.src()
+				if (url != null) {
+					val resolvedUrl = url.toAbsoluteUrl(domain)
 					MangaPage(
-						id = generateUid(imgUrl),
-						url = imgUrl,
+						id = generateUid(resolvedUrl),
+						url = resolvedUrl,
 						preview = null,
 						source = source,
 					)
-				} else {
-					null
-				}
+				} else null
 			}
 			if (images.isNotEmpty()) {
 				return images.distinctBy { it.url }
 			}
 		}
-
-		// Fallback: try the standard Madara reader (div.main-col-inner div.reading-content)
-		val readingContent = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
-		if (readingContent != null) {
-			val images = readingContent.select("img").mapNotNull { img ->
-				val imgUrl = img.src()
-				if (imgUrl != null) {
-					MangaPage(
-						id = generateUid(imgUrl),
-						url = imgUrl,
-						preview = null,
-						source = source,
-					)
-				} else {
-					null
-				}
-			}
-			if (images.isNotEmpty()) {
-				return images.distinctBy { it.url }
-			}
-		}
-
-		// Last resort: use the parent's getPages (handles chapter-protector, page-break, etc.)
+		// Last resort: parent's getPages
 		return super.getPages(chapter)
-	}
-
-	private suspend fun fetchTags(): Set<MangaTag> {
+	}private suspend fun fetchTags(): Set<MangaTag> {
 		val doc = webClient.httpGet("https://$domain/the-loai-genres").parseHtml()
 		val elements = doc.select("ul.list-unstyled li a")
 		return elements.mapToSet { element ->
