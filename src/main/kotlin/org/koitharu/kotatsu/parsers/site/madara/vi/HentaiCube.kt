@@ -1,6 +1,8 @@
 package org.koitharu.kotatsu.parsers.site.madara.vi
 
+import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import org.jsoup.select.Elements
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.exception.ParseException
@@ -9,18 +11,21 @@ import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
 import org.koitharu.kotatsu.parsers.util.*
 import org.koitharu.kotatsu.parsers.util.suspendlazy.getOrNull
 import org.koitharu.kotatsu.parsers.util.suspendlazy.suspendLazy
+import java.text.SimpleDateFormat
 
 @MangaSourceParser("HENTAICUBE", "CBHentai", "vi", ContentType.HENTAI)
 internal class HentaiCube(context: MangaLoaderContext) :
-	MadaraParser(context, MangaParserSource.HENTAICUBE, "hentaicube.xyz") {
+	MadaraParser(context, MangaParserSource.HENTAICUBE, "2tencb.pro") {
 
 	override val datePattern = "dd/MM/yyyy"
-	override val postReq = true
 	override val authorSearchSupported = true
-	override val postDataReq = "action=manga_views&manga="
 
 	override val mangaSubString = "read"
 	override val filterNonMangaItems = false
+
+	// Do NOT use admin-ajax for chapters (postReq=false is the default).
+	// The site serves chapters via XHR /ajax/chapters with pagination.
+	override val postReq = false
 
 	private val thumbnailOriginalUrlRegex = Regex("-\\d+x\\d+(\\.[a-zA-Z]+)$")
 
@@ -141,21 +146,131 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		}
 	}
 
-override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+	// ── Chapter Loading with XHR Pagination ──────────────────────────
+	// The site loads chapters via POST to /ajax/chapters/ and may paginate
+	// with ?t=PAGE. We collect all pages, combine elements, then parse once
+	// to ensure correct ordering (oldest-first with sequential numbering).
+	override suspend fun loadChapters(mangaUrl: String, document: Document): List<MangaChapter> {
+		val chaptersWrapper = document.select("div[id^=manga-chapters-holder]")
+
+		// If chapters are embedded directly in the HTML, use them
+		val htmlChapters = document.select(selectChapter)
+		if (htmlChapters.isNotEmpty()) {
+			return parseChapterElements(htmlChapters)
+		}
+
+		// Otherwise fetch via XHR endpoint with pagination
+		if (chaptersWrapper.isNotEmpty()) {
+			val baseUrl = "${mangaUrl.removeSuffix("/")}/ajax/chapters/"
+			val allElements = Elements()
+			var page = 1
+
+			while (true) {
+				val xhrUrl = if (page <= 1) {
+					baseUrl
+				} else {
+					"$baseUrl?t=$page"
+				}
+				val xhrDoc = webClient.httpPost(xhrUrl, emptyMap()).parseHtml()
+				val pageChapters = xhrDoc.select(selectChapter)
+				if (pageChapters.isEmpty()) break
+
+				allElements.addAll(pageChapters)
+
+				// Check if there's a next page
+				val hasNext = xhrDoc.selectFirst("div.pagination a[data-page='${page + 1}']") != null
+				if (!hasNext) break
+				page++
+			}
+
+			if (allElements.isNotEmpty()) {
+				return parseChapterElements(allElements)
+			}
+		}
+
+		// Final fallback: try the parent's XHR approach
+		return super.loadChapters(mangaUrl, document)
+	}
+
+	// Parse chapter Elements into MangaChapter list.
+	// XHR returns chapters newest-first; reversed=true reverses to oldest-first.
+	private fun parseChapterElements(elements: Elements): List<MangaChapter> {
+		val dateFormat = SimpleDateFormat(datePattern, sourceLocale)
+		return elements.mapChapters(reversed = true) { i, li ->
+			val a = li.selectFirstOrThrow("a")
+			val href = a.attrAsRelativeUrl("href")
+			val link = href + stylePage
+			val dateText = li.selectFirst("a.c-new-tag")?.attr("title")
+				?: li.selectFirst(selectDate)?.text()
+			val name = a.selectFirst("p")?.text() ?: a.ownText()
+			MangaChapter(
+				id = generateUid(href),
+				title = name,
+				number = i + 1f,
+				volume = 0,
+				url = link,
+				uploadDate = parseChapterDate(dateFormat, dateText),
+				source = source,
+				scanlator = null,
+				branch = null,
+			)
+		}
+	}
+
+	// ── Page (Image) Loading ─────────────────────────────────────────
+	// The site uses #manga-secure-reader with lazy-loaded images (data-src).
+	// Fall back to standard selectors if the custom reader is not found.
+	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
 		val doc = webClient.httpGet(fullUrl).parseHtml()
-		val root = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
-			?: throw ParseException("Root not found", fullUrl)
-		return root.select("img").map { img ->
-			val url = imageFromElement(img)?.toRelativeUrl(domain)
-				?: img.requireSrc().toRelativeUrl(domain)
-			MangaPage(
-				id = generateUid(url),
-				url = url,
-				preview = null,
-				source = source,
-			)
-		}.distinctBy { it.url }
+
+		// Try #manga-secure-reader first (custom Madara reader with JS-loaded images)
+		val secureReader = doc.body().selectFirst("#manga-secure-reader")
+		if (secureReader != null) {
+			val images = secureReader.select("img").mapNotNull { img ->
+				// Try data-src first (lazy-loaded), then fall back to src
+				val imgUrl = imageFromElement(img)
+					?: img.attr("abs:src").nullIfEmpty()
+				if (imgUrl != null && !imgUrl.startsWith("data:image")) {
+					MangaPage(
+						id = generateUid(imgUrl),
+						url = imgUrl,
+						preview = null,
+						source = source,
+					)
+				} else {
+					null
+				}
+			}
+			if (images.isNotEmpty()) {
+				return images.distinctBy { it.url }
+			}
+		}
+
+		// Fallback: try the standard Madara reader (div.main-col-inner div.reading-content)
+		val readingContent = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
+		if (readingContent != null) {
+			val images = readingContent.select("img").mapNotNull { img ->
+				val imgUrl = imageFromElement(img)
+					?: img.attr("abs:src").nullIfEmpty()
+				if (imgUrl != null && !imgUrl.startsWith("data:image")) {
+					MangaPage(
+						id = generateUid(imgUrl),
+						url = imgUrl,
+						preview = null,
+						source = source,
+					)
+				} else {
+					null
+				}
+			}
+			if (images.isNotEmpty()) {
+				return images.distinctBy { it.url }
+			}
+		}
+
+		// Last resort: use the parent's getPages (handles chapter-protector, page-break, etc.)
+		return super.getPages(chapter)
 	}
 
 	private suspend fun fetchTags(): Set<MangaTag> {
