@@ -233,14 +233,61 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 
-		// Try reading-content + manga-secure-reader (JS-loaded images via data-src)
+		// 1) Try REST API: /wp-json/manga-reader/v1/images
+		// Extract masr nonce/session from script tags on the page
+		val scriptTags = doc.select("script")
+		val nonce = scriptTags.mapNotNull { s ->
+			Regex("""["']?(?:masr|manga-reader)["']?\s*[:=]\s*["']([^"']+)["']""").find(s.data())?.groupValues?.get(1)
+		}.firstOrNull()
+		val session = scriptTags.mapNotNull { s ->
+			Regex("""session\s*[:=]\s*["']([^"']+)["']""").find(s.data())?.groupValues?.get(1)
+		}.firstOrNull()
+
+		if (nonce != null || session != null) {
+			val apiUrl = "https://$domain/wp-json/manga-reader/v1/images"
+			val headers = okhttp3.Headers.Builder().apply {
+				add("Accept", "application/json")
+				add("Referer", fullUrl)
+				nonce?.let { add("x-masr-nonce", it) }
+				session?.let { add("x-masr-session", it) }
+			}.build()
+
+			val images = mutableListOf<String>()
+			var offset = 0
+			val limit = 50
+			while (true) {
+				val json = webClient.httpGet("$apiUrl?offset=$offset&limit=$limit", headers)
+					.parseJson()
+				val arr = json.getJSONArray("images")
+				for (i in 0 until arr.length()) {
+					images.add(arr.getString(i))
+				}
+				val count = json.optInt("count", 0)
+				val next = json.optInt("next", 0)
+				if (next >= count || arr.length() == 0) break
+				offset = next
+			}
+
+			if (images.isNotEmpty()) {
+				return images.map { url ->
+					MangaPage(
+						id = generateUid(url),
+						url = url,
+						preview = null,
+						source = source,
+					)
+				}
+			}
+		}
+
+		// 2) Fallback: HTML parsing with #manga-secure-reader and .reading-content
 		val containers = listOfNotNull(
-			doc.body().selectFirst(".reading-content"),
 			doc.body().selectFirst("#manga-secure-reader"),
+			doc.body().selectFirst(".reading-content"),
 		)
 		for (container in containers) {
 			val images = container.select("img").mapNotNull { img ->
-				// Prefer data-src (full-res lazy-load) then src, exclude blank placeholders
+				// Prefer data-src (full-res lazy-load) then src
 				val url = img.attr("data-src").takeIf { it.isNotEmpty() }
 					?: img.attr("src").takeIf { it.isNotEmpty() && !it.contains("blank") }
 					?: img.src()
@@ -258,7 +305,7 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				return images.distinctBy { it.url }
 			}
 		}
-		// Last resort: parent's getPages
+		// Last resort
 		return super.getPages(chapter)
 	}private suspend fun fetchTags(): Set<MangaTag> {
 		val doc = webClient.httpGet("https://$domain/the-loai-genres").parseHtml()
