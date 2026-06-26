@@ -150,6 +150,11 @@ internal class HentaiCube(context: MangaLoaderContext) :
 	// The site loads chapters via POST to /ajax/chapters/ and may paginate
 	// with ?t=PAGE. We collect all pages, combine elements, then parse once
 	// to ensure correct ordering (oldest-first with sequential numbering).
+	//
+	// IMPORTANT: mangaUrl coming from getDetails is a relative URL (e.g.
+	// /read/slug/). We must convert to absolute before passing to
+	// webClient.httpPost, since its default implementation calls
+	// HttpUrl.get(urlString) which requires a scheme.
 	override suspend fun loadChapters(mangaUrl: String, document: Document): List<MangaChapter> {
 		val chaptersWrapper = document.select("div[id^=manga-chapters-holder]")
 
@@ -161,7 +166,8 @@ internal class HentaiCube(context: MangaLoaderContext) :
 
 		// Otherwise fetch via XHR endpoint with pagination
 		if (chaptersWrapper.isNotEmpty()) {
-			val baseUrl = "${mangaUrl.removeSuffix("/")}/ajax/chapters/"
+			val absoluteMangaUrl = mangaUrl.toAbsoluteUrl(domain)
+			val baseUrl = "${absoluteMangaUrl.removeSuffix("/")}/ajax/chapters/"
 			val allElements = Elements()
 			var page = 1
 
@@ -189,7 +195,10 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		}
 
 		// Final fallback: try the parent's XHR approach
-		return super.loadChapters(mangaUrl, document)
+		// Note: super.loadChapters also passes relative mangaUrl, so it
+		// may fail with the same scheme error. If we reach here and
+		// have no chapters, return empty list.
+		return emptyList()
 	}
 
 	// Parse chapter Elements into MangaChapter list.
