@@ -2,8 +2,6 @@ package org.koitharu.kotatsu.parsers.site.vi
 
 import androidx.collection.ArrayMap
 import androidx.collection.arraySetOf
-import com.google.gson.Gson
-import com.google.gson.JsonParser
 import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaParserAuthProvider
@@ -383,33 +381,16 @@ internal class CMangaParser(context: MangaLoaderContext) :
         return cleanUrl.startsWith(adsUrl) || cleanUrl.contains("?v=12&data=")
     }
 
-    // ============================== JSON parsing (no regex) ===============================
-
-    private val gson = Gson()
-    
     private fun safeParseJson(raw: String): JSONObject? {
         if (raw.isBlank()) return null
-        
-        // Clean basic issues
         val cleaned = raw
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
             .replace("\\/", "/")
             .replace("}\n{", "},{")
             .replace("]\n[", "],[")
-        
-        // Try with Gson lenient parsing first
         return runCatching {
-            val jsonElement = JsonParser.parseString(cleaned)
-            JSONObject(jsonElement.toString())
-        }.getOrElse { error1 ->
-            // Fallback to standard JSONObject
-            runCatching {
-                JSONObject(cleaned)
-            }.getOrElse { error2 ->
-                println("JSON parse failed: ${error1.message} / ${error2.message}")
-                null
-            }
+            JSONObject(cleaned)
+        }.getOrElse {
+            null
         }
     }
 
