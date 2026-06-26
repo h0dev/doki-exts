@@ -234,13 +234,14 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 
 		// Try #manga-secure-reader first (custom Madara reader with JS-loaded images)
+		// NOTE: Element.src() checks data-src FIRST regardless of CSS class, unlike
+		// imageFromElement() which only checks data-src for .wp-manga-chapter-img elements.
+		// This site uses plain <img> tags with data-src (lazy-load) but NO special class.
 		val secureReader = doc.body().selectFirst("#manga-secure-reader")
 		if (secureReader != null) {
 			val images = secureReader.select("img").mapNotNull { img ->
-				// Try data-src first (lazy-loaded), then fall back to src
-				val imgUrl = imageFromElement(img)
-					?: img.attr("abs:src").nullIfEmpty()
-				if (imgUrl != null && !imgUrl.startsWith("data:image")) {
+				val imgUrl = img.src()
+				if (imgUrl != null) {
 					MangaPage(
 						id = generateUid(imgUrl),
 						url = imgUrl,
@@ -260,9 +261,8 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		val readingContent = doc.body().selectFirst("div.main-col-inner")?.selectFirst("div.reading-content")
 		if (readingContent != null) {
 			val images = readingContent.select("img").mapNotNull { img ->
-				val imgUrl = imageFromElement(img)
-					?: img.attr("abs:src").nullIfEmpty()
-				if (imgUrl != null && !imgUrl.startsWith("data:image")) {
+				val imgUrl = img.src()
+				if (imgUrl != null) {
 					MangaPage(
 						id = generateUid(imgUrl),
 						url = imgUrl,
