@@ -13,6 +13,7 @@ import org.koitharu.kotatsu.parsers.site.madara.MadaraParser
 import org.koitharu.kotatsu.parsers.util.*
 import org.koitharu.kotatsu.parsers.util.suspendlazy.getOrNull
 import org.koitharu.kotatsu.parsers.util.suspendlazy.suspendLazy
+import okhttp3.Headers.Companion.toHeaders
 import java.text.SimpleDateFormat
 
 @MangaSourceParser("HENTAICUBE", "CBHentai", "vi", ContentType.HENTAI)
@@ -276,7 +277,7 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				System.err.println("[HentaiCube] S1: GET $challengeUrl")
 				val challengeJson = webClient.httpGet(
 					challengeUrl,
-					extraHeaders = mapOf("Accept" to "application/json"),
+					extraHeaders = mapOf("Accept" to "application/json").toHeaders(),
 				).parseJson()
 				val nonce = challengeJson.getString("nonce")
 				val session = challengeJson.getString("session")
@@ -287,7 +288,7 @@ internal class HentaiCube(context: MangaLoaderContext) :
 					"Accept" to "application/json",
 					"X-MASR-Nonce" to nonce,
 					"X-MASR-Session" to session,
-				)
+				).toHeaders()
 				val allImages = mutableListOf<String>()
 				var offset = 0
 				val limit = 50
