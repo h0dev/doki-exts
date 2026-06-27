@@ -1,6 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.madara.vi
 
 import org.json.JSONArray
+import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.jsoup.select.Elements
@@ -258,9 +259,9 @@ internal class HentaiCube(context: MangaLoaderContext) :
 					?.trim()
 				if (jsonStr.isNullOrEmpty()) throw ParseException("MASR_READER not found", fullUrl)
 				val masrReader = JSONObject(jsonStr)
-				val challengeUrl = masrReader.optString("challengeUrl", null)
-				val imagesUrl = masrReader.optString("imagesUrl", null)
-				if (challengeUrl == null || imagesUrl == null) {
+				val challengeUrl = masrReader.optString("challengeUrl")
+				val imagesUrl = masrReader.optString("imagesUrl")
+				if (challengeUrl.isEmpty() || imagesUrl.isEmpty()) {
 					throw ParseException("MASR_READER missing urls", fullUrl)
 				}
 
