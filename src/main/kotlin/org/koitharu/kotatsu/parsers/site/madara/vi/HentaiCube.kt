@@ -256,7 +256,12 @@ internal class HentaiCube(context: MangaLoaderContext) :
 		//   Returns { images: [...], next: N|null, count: N }.
 		// Cookies from the initial page GET are sent automatically (same-origin).
 		try {
-			val doc = webClient.httpGet(fullUrl).parseHtml()
+			// Fetch the chapter page to get cookies + parse MASR config
+			val pageResp = webClient.httpGet(fullUrl)
+			// Log Set-Cookie from page response for debugging
+			val pageCookies = pageResp.headers("Set-Cookie")
+			System.err.println("[HentaiCube] S1: page Set-Cookie count=${pageCookies.size}, first=${pageCookies.firstOrNull()?.take(100)}")
+			val doc = pageResp.parseHtml()
 
 			// Extract MASR_READER config from <script> tag
 			val masrScript = doc.selectFirst("script:containsData(MASR_READER)")
@@ -273,16 +278,25 @@ internal class HentaiCube(context: MangaLoaderContext) :
 					throw ParseException("MASR_READER missing urls", fullUrl)
 				}
 
+				// Build Cookie header from page response cookies
+				val cookieHeader = pageCookies.joinToString("; ") { it.substringBefore(";") }
+
 				// GET challenge endpoint (no params, uses cookies)
-				System.err.println("[HentaiCube] S1: GET $challengeUrl")
+				System.err.println("[HentaiCube] S1: GET $challengeUrl (cookieLen=${cookieHeader.length})")
 				val challengeHeaders = mapOf(
 					"Accept" to "application/json",
 					"Referer" to fullUrl,
+					"Cookie" to cookieHeader,
 				).toHeaders()
-				val challengeJson = webClient.httpGet(
-					challengeUrl,
-					extraHeaders = challengeHeaders,
-				).parseJson()
+				val challengeResp = webClient.httpGet(challengeUrl, extraHeaders = challengeHeaders)
+				val challengeStatus = challengeResp.code
+				System.err.println("[HentaiCube] S1: challenge status=$challengeStatus contentType=${challengeResp.header("Content-Type")}")
+				if (!challengeResp.isSuccessful) {
+					val errBody = challengeResp.body?.string() ?: ""
+					System.err.println("[HentaiCube] S1: challenge error body=$errBody")
+					throw ParseException("Challenge failed: $challengeStatus $errBody", fullUrl)
+				}
+				val challengeJson = challengeResp.parseJson()
 				val nonce = challengeJson.getString("nonce")
 				val session = challengeJson.getString("session")
 				System.err.println("[HentaiCube] S1: nonce=${nonce.take(20)} session=${session.take(30)}")
@@ -291,6 +305,7 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				val masrHeaders = mapOf(
 					"Accept" to "application/json",
 					"Referer" to fullUrl,
+					"Cookie" to cookieHeader,
 					"X-MASR-Nonce" to nonce,
 					"X-MASR-Session" to session,
 				).toHeaders()
@@ -302,7 +317,13 @@ internal class HentaiCube(context: MangaLoaderContext) :
 					loopCount++
 					System.err.println("[HentaiCube] S1: GET images offset=$offset limit=$limit")
 					val imgUrl = "$imagesUrl?offset=$offset&limit=$limit"
-					val json = webClient.httpGet(imgUrl, extraHeaders = masrHeaders).parseJson()
+					val resp = webClient.httpGet(imgUrl, extraHeaders = masrHeaders)
+					if (!resp.isSuccessful) {
+						val errBody = resp.body?.string() ?: ""
+						System.err.println("[HentaiCube] S1: images error status=${resp.code} body=${errBody.take(200)}")
+						throw ParseException("Images failed: ${resp.code}", fullUrl)
+					}
+					val json = resp.parseJson()
 					val arr = json.getJSONArray("images")
 					System.err.println("[HentaiCube] S1: images count=${arr.length()}")
 					for (i in 0 until arr.length()) {
