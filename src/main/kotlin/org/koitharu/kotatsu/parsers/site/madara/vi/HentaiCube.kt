@@ -234,42 +234,27 @@ internal class HentaiCube(context: MangaLoaderContext) :
 	// dynamically via JS (REST API with nonce/session headers). Images
 	// are NOT in the static HTML.
 	//
-	// Strategy 1: Parse MASR_READER config from HTML + POST to REST API.
-	//   The MASR_READER JS variable is embedded server-side in a <script>
-	//   tag and contains challengeUrl + imagesUrl. We extract it with
-	//   Jsoup, then POST to /challenge (with mangaUrl+pageUrl) to get
-	//   nonce+session, then POST to /images (with nonce+session+offset+
-	//   limit) to retrieve image URLs with pagination.
-	//   NOTE: evaluateJs() is NOT a WebView (it's a pure JS engine), so
-	//   we must do the API calls natively via Kotlin HTTP client.
-	// Strategy 2: HTML parsing — scan #manga-secure-reader for <img> tags.
-	// Strategy 3: super.getPages() — MadaraParser default fallback.
+	// Protocol (from masr-reader.js):
+	//   1. GET challengeUrl → { nonce, session }
+	//   2. GET imagesUrl?offset=N&limit=N with headers: X-MASR-Nonce,
+	//      X-MASR-Session, Cookie (from page response)
+	//   3. Parse { images: [...], next: N|null, count: N }
+	//
+	// Falls back to HTML parsing, then super.getPages().
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
-		System.err.println("[HentaiCube] getPages: $fullUrl")
 
 		// ── Strategy 1: Parse MASR_READER + REST API calls ────────────
-		// The MASR JS (masr-reader.js) reveals the correct API protocol:
-		// - Challenge: GET (not POST) with Accept: application/json, no body.
-		//   Returns { nonce, session }.
-		// - Images: GET with ?offset=N&limit=N, headers X-MASR-Nonce + X-MASR-Session.
-		//   Returns { images: [...], next: N|null, count: N }.
-		// Cookies from the initial page GET are sent automatically (same-origin).
 		try {
-			// Fetch the chapter page to get cookies + parse MASR config
 			val pageResp = webClient.httpGet(fullUrl)
-			// Log Set-Cookie from page response for debugging
 			val pageCookies = pageResp.headers("Set-Cookie")
-			System.err.println("[HentaiCube] S1: page Set-Cookie count=${pageCookies.size}, first=${pageCookies.firstOrNull()?.take(100)}")
 			val doc = pageResp.parseHtml()
 
-			// Extract MASR_READER config from <script> tag
 			val masrScript = doc.selectFirst("script:containsData(MASR_READER)")
 			if (masrScript != null) {
 				val scriptData = masrScript.data()
 				val jsonStr = MASR_READER_REGEX.find(scriptData)
-					?.groupValues?.getOrNull(1)
-					?.trim()
+					?.groupValues?.getOrNull(1)?.trim()
 				if (jsonStr.isNullOrEmpty()) throw ParseException("MASR_READER not found", fullUrl)
 				val masrReader = JSONObject(jsonStr)
 				val challengeUrl = masrReader.optString("challengeUrl")
@@ -278,30 +263,21 @@ internal class HentaiCube(context: MangaLoaderContext) :
 					throw ParseException("MASR_READER missing urls", fullUrl)
 				}
 
-				// Build Cookie header from page response cookies
 				val cookieHeader = pageCookies.joinToString("; ") { it.substringBefore(";") }
 
-				// GET challenge endpoint (no params, uses cookies)
-				System.err.println("[HentaiCube] S1: GET $challengeUrl (cookieLen=${cookieHeader.length})")
-				val challengeHeaders = mapOf(
-					"Accept" to "application/json",
-					"Referer" to fullUrl,
-					"Cookie" to cookieHeader,
-				).toHeaders()
-				val challengeResp = webClient.httpGet(challengeUrl, extraHeaders = challengeHeaders)
-				val challengeStatus = challengeResp.code
-				System.err.println("[HentaiCube] S1: challenge status=$challengeStatus contentType=${challengeResp.header("Content-Type")}")
-				if (!challengeResp.isSuccessful) {
-					val errBody = challengeResp.body?.string() ?: ""
-					System.err.println("[HentaiCube] S1: challenge error body=$errBody")
-					throw ParseException("Challenge failed: $challengeStatus $errBody", fullUrl)
-				}
-				val challengeJson = challengeResp.parseJson()
+				// GET challenge
+				val challengeJson = webClient.httpGet(
+					challengeUrl,
+					extraHeaders = mapOf(
+						"Accept" to "application/json",
+						"Referer" to fullUrl,
+						"Cookie" to cookieHeader,
+					).toHeaders(),
+				).parseJson()
 				val nonce = challengeJson.getString("nonce")
 				val session = challengeJson.getString("session")
-				System.err.println("[HentaiCube] S1: nonce=${nonce.take(20)} session=${session.take(30)}")
 
-				// GET images endpoint with query params + MASR headers
+				// GET images (paginated)
 				val masrHeaders = mapOf(
 					"Accept" to "application/json",
 					"Referer" to fullUrl,
@@ -312,46 +288,30 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				val allImages = mutableListOf<String>()
 				var offset = 0
 				val limit = 50
-				var loopCount = 0
-				while (loopCount < 10) {
-					loopCount++
-					System.err.println("[HentaiCube] S1: GET images offset=$offset limit=$limit")
-					val imgUrl = "$imagesUrl?offset=$offset&limit=$limit"
-					val resp = webClient.httpGet(imgUrl, extraHeaders = masrHeaders)
-					if (!resp.isSuccessful) {
-						val errBody = resp.body?.string() ?: ""
-						System.err.println("[HentaiCube] S1: images error status=${resp.code} body=${errBody.take(200)}")
-						throw ParseException("Images failed: ${resp.code}", fullUrl)
-					}
-					val json = resp.parseJson()
+				while (true) {
+					val json = webClient.httpGet(
+						"$imagesUrl?offset=$offset&limit=$limit",
+						extraHeaders = masrHeaders,
+					).parseJson()
 					val arr = json.getJSONArray("images")
-					System.err.println("[HentaiCube] S1: images count=${arr.length()}")
 					for (i in 0 until arr.length()) {
 						allImages.add(arr.getString(i))
 					}
 					val hasNext = json.has("next") && !json.isNull("next")
 					val next = if (hasNext) json.getInt("next") else -1
 					val count = json.optInt("count", allImages.size)
-					System.err.println("[HentaiCube] S1: next=$next count=$count total=${allImages.size}")
 					if (!hasNext || arr.length() == 0) break
 					if (next <= 0 || next >= count) break
 					offset = next
 				}
 
-				System.err.println("[HentaiCube] S1: TOTAL images=${allImages.size}")
 				if (allImages.isNotEmpty()) {
-					System.err.println("[HentaiCube] S1: firstURL=${allImages.first().take(100)}")
 					return allImages.map { url ->
 						MangaPage(id = generateUid(url), url = url, preview = null, source = source)
 					}
 				}
-				System.err.println("[HentaiCube] S1: 0 images, fall through")
-			} else {
-				System.err.println("[HentaiCube] S1: no MASR_READER script found")
 			}
-		} catch (e: Exception) {
-			System.err.println("[HentaiCube] S1: FAIL ${e.javaClass.simpleName}: ${e.message}")
-		}
+		} catch (_: Exception) { /* fall through */ }
 
 		// ── Strategy 2: HTML parsing ─────────────────────────────────
 		try {
@@ -360,15 +320,8 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				doc.body().selectFirst("#manga-secure-reader"),
 				doc.body().selectFirst(".reading-content"),
 			)
-			System.err.println("[HentaiCube] S2: containers=${containers.size}")
-
-			for ((ci, container) in containers.withIndex()) {
-				val allImgs = container.select("img")
-				System.err.println("[HentaiCube] S2: container[$ci] <${container.tagName()}> imgs=${allImgs.size}")
-				allImgs.forEachIndexed { ii, img ->
-					System.err.println("[HentaiCube] S2: img[$ii] data-src=${img.attr("data-src")} src=${img.attr("src")} Element.src=${img.src()}")
-				}
-				val images = allImgs.mapNotNull { img ->
+			for (container in containers) {
+				val images = container.select("img").mapNotNull { img ->
 					val url = img.attr("data-src").takeIf { it.isNotEmpty() }
 						?: img.attr("src").takeIf { it.isNotEmpty() && !it.contains("blank") }
 						?: img.src()
@@ -377,19 +330,13 @@ internal class HentaiCube(context: MangaLoaderContext) :
 						MangaPage(id = generateUid(resolvedUrl), url = resolvedUrl, preview = null, source = source)
 					} else null
 				}
-				System.err.println("[HentaiCube] S2: container[$ci] valid=${images.size}")
 				if (images.isNotEmpty()) {
-					System.err.println("[HentaiCube] S2: RETURN ${images.size} pages")
 					return images.distinctBy { it.url }
 				}
 			}
-			System.err.println("[HentaiCube] S2: 0 images, fall through")
-		} catch (e: Exception) {
-			System.err.println("[HentaiCube] S2: FAIL ${e.javaClass.simpleName}: ${e.message}")
-		}
+		} catch (_: Exception) { /* fall through */ }
 
 		// ── Strategy 3: MadaraParser default fallback ────────────────
-		System.err.println("[HentaiCube] S3: super.getPages()")
 		return super.getPages(chapter)
 	}
 
