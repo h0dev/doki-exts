@@ -275,9 +275,13 @@ internal class HentaiCube(context: MangaLoaderContext) :
 
 				// GET challenge endpoint (no params, uses cookies)
 				System.err.println("[HentaiCube] S1: GET $challengeUrl")
+				val challengeHeaders = mapOf(
+					"Accept" to "application/json",
+					"Referer" to fullUrl,
+				).toHeaders()
 				val challengeJson = webClient.httpGet(
 					challengeUrl,
-					extraHeaders = mapOf("Accept" to "application/json").toHeaders(),
+					extraHeaders = challengeHeaders,
 				).parseJson()
 				val nonce = challengeJson.getString("nonce")
 				val session = challengeJson.getString("session")
@@ -286,6 +290,7 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				// GET images endpoint with query params + MASR headers
 				val masrHeaders = mapOf(
 					"Accept" to "application/json",
+					"Referer" to fullUrl,
 					"X-MASR-Nonce" to nonce,
 					"X-MASR-Session" to session,
 				).toHeaders()
