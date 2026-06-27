@@ -245,47 +245,63 @@ internal class HentaiCube(context: MangaLoaderContext) :
 	// Strategy 3: super.getPages() — MadaraParser default fallback.
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
+		System.err.println("[HentaiCube] getPages: $fullUrl")
 
 		// ── Strategy 1: Parse MASR_READER + REST API calls ────────────
 		try {
 			val doc = webClient.httpGet(fullUrl).parseHtml()
 
+			// Dump all script tags containing MASR-related data
+			val allScripts = doc.select("script")
+			val masrScripts = allScripts.filter { it.data().contains("MASR", ignoreCase = true) }
+			System.err.println("[HentaiCube] S1: ${allScripts.size} total script tags, ${masrScripts.size} with MASR")
+			masrScripts.forEachIndexed { i, el ->
+				System.err.println("[HentaiCube] S1: script[$i]=${el.data().take(500).replace("\n", "\\n")}")
+			}
+
 			// Extract MASR_READER config from <script> tag
 			val masrScript = doc.selectFirst("script:containsData(MASR_READER)")
 			if (masrScript != null) {
 				val scriptData = masrScript.data()
-				val jsonStr = MASR_READER_REGEX.find(scriptData)
-					?.groupValues?.getOrNull(1)
-					?.trim()
+				System.err.println("[HentaiCube] S1: MASR_READER script len=${scriptData.length}")
+				val matchResult = MASR_READER_REGEX.find(scriptData)
+				System.err.println("[HentaiCube] S1: regex matched=${matchResult != null}, groups=${matchResult?.groupValues?.size}")
+				val jsonStr = matchResult?.groupValues?.getOrNull(1)?.trim()
+				System.err.println("[HentaiCube] S1: JSON=${jsonStr?.take(400)}")
 				if (jsonStr.isNullOrEmpty()) throw ParseException("MASR_READER not found", fullUrl)
 				val masrReader = JSONObject(jsonStr)
 				val challengeUrl = masrReader.optString("challengeUrl")
 				val imagesUrl = masrReader.optString("imagesUrl")
+				System.err.println("[HentaiCube] S1: challengeUrl=$challengeUrl")
+				System.err.println("[HentaiCube] S1: imagesUrl=$imagesUrl")
 				if (challengeUrl.isEmpty() || imagesUrl.isEmpty()) {
 					throw ParseException("MASR_READER missing urls", fullUrl)
 				}
 
 				// Derive manga URL from chapter URL by removing last path segment
-				// Chapter: /read/slug/chapter-1/ → Manga: /read/slug/
 				val mangaUrl = fullUrl.substringBefore("?").trimEnd('/')
 					.substringBeforeLast("/") + "/"
+				System.err.println("[HentaiCube] S1: mangaUrl=$mangaUrl")
 
 				// POST to challenge endpoint → get nonce + session
-				val challengeResponse = webClient.httpPost(
+				System.err.println("[HentaiCube] S1: POST $challengeUrl")
+				val challengeJson = webClient.httpPost(
 					challengeUrl,
-					mapOf(
-						"mangaUrl" to mangaUrl,
-						"pageUrl" to fullUrl,
-					),
+					mapOf("mangaUrl" to mangaUrl, "pageUrl" to fullUrl),
 				).parseJson()
-				val nonce = challengeResponse.getString("nonce")
-				val session = challengeResponse.getString("session")
+				System.err.println("[HentaiCube] S1: challenge response keys=${challengeJson.keys().asSequence().toList()}")
+				val nonce = challengeJson.getString("nonce")
+				val session = challengeJson.getString("session")
+				System.err.println("[HentaiCube] S1: nonce=${nonce.take(20)} session=${session.take(30)}")
 
 				// POST to images endpoint with pagination
 				val allImages = mutableListOf<String>()
 				var offset = 0
 				val limit = 50
-				while (true) {
+				var loopCount = 0
+				while (loopCount < 10) {
+					loopCount++
+					System.err.println("[HentaiCube] S1: POST images offset=$offset")
 					val json = webClient.httpPost(
 						imagesUrl,
 						mapOf(
@@ -297,30 +313,37 @@ internal class HentaiCube(context: MangaLoaderContext) :
 							"limit" to limit.toString(),
 						),
 					).parseJson()
+					System.err.println("[HentaiCube] S1: images keys=${json.keys().asSequence().toList()}")
 					val arr = json.getJSONArray("images")
+					System.err.println("[HentaiCube] S1: images arr len=${arr.length()}")
 					for (i in 0 until arr.length()) {
 						allImages.add(arr.getString(i))
 					}
-					if (!json.has("next") || json.isNull("next") || arr.length() == 0) break
-					val next = json.getInt("next")
+					val hasNext = json.has("next") && !json.isNull("next")
+					val next = if (hasNext) json.getInt("next") else -1
 					val count = json.optInt("count", allImages.size)
+					System.err.println("[HentaiCube] S1: next=$next count=$count total=${allImages.size}")
+					if (!hasNext || arr.length() == 0) break
 					if (next <= 0 || next >= count) break
 					offset = next
 				}
 
+				System.err.println("[HentaiCube] S1: TOTAL images=${allImages.size}")
 				if (allImages.isNotEmpty()) {
+					System.err.println("[HentaiCube] S1: firstURL=${allImages.first().take(100)}")
 					return allImages.map { url ->
-						MangaPage(
-							id = generateUid(url),
-							url = url,
-							preview = null,
-							source = source,
-						)
+						MangaPage(id = generateUid(url), url = url, preview = null, source = source)
 					}
 				}
+				System.err.println("[HentaiCube] S1: 0 images, fall through")
+			} else {
+				System.err.println("[HentaiCube] S1: no MASR_READER script found in page")
+				// Dump first 1000 chars of page body to see what's there
+				System.err.println("[HentaiCube] S1: page body(1000)=${doc.body()?.html()?.take(1000)}")
 			}
-		} catch (_: Exception) {
-			// MASR API call failed (Cloudflare, network, etc.) — fall through
+		} catch (e: Exception) {
+			System.err.println("[HentaiCube] S1: FAIL ${e.javaClass.simpleName}: ${e.message}")
+			e.printStackTrace()
 		}
 
 		// ── Strategy 2: HTML parsing ─────────────────────────────────
@@ -330,28 +353,36 @@ internal class HentaiCube(context: MangaLoaderContext) :
 				doc.body().selectFirst("#manga-secure-reader"),
 				doc.body().selectFirst(".reading-content"),
 			)
-			for (container in containers) {
-				val images = container.select("img").mapNotNull { img ->
+			System.err.println("[HentaiCube] S2: containers=${containers.size}")
+
+			for ((ci, container) in containers.withIndex()) {
+				val allImgs = container.select("img")
+				System.err.println("[HentaiCube] S2: container[$ci] <${container.tagName()}> imgs=${allImgs.size}")
+				allImgs.forEachIndexed { ii, img ->
+					System.err.println("[HentaiCube] S2: img[$ii] data-src=${img.attr("data-src")} src=${img.attr("src")} Element.src=${img.src()}")
+				}
+				val images = allImgs.mapNotNull { img ->
 					val url = img.attr("data-src").takeIf { it.isNotEmpty() }
 						?: img.attr("src").takeIf { it.isNotEmpty() && !it.contains("blank") }
 						?: img.src()
 					if (url != null) {
 						val resolvedUrl = url.toAbsoluteUrl(domain)
-						MangaPage(
-							id = generateUid(resolvedUrl),
-							url = resolvedUrl,
-							preview = null,
-							source = source,
-						)
+						MangaPage(id = generateUid(resolvedUrl), url = resolvedUrl, preview = null, source = source)
 					} else null
 				}
+				System.err.println("[HentaiCube] S2: container[$ci] valid=${images.size}")
 				if (images.isNotEmpty()) {
+					System.err.println("[HentaiCube] S2: RETURN ${images.size} pages")
 					return images.distinctBy { it.url }
 				}
 			}
-		} catch (_: Exception) { /* fall through */ }
+			System.err.println("[HentaiCube] S2: 0 images, fall through")
+		} catch (e: Exception) {
+			System.err.println("[HentaiCube] S2: FAIL ${e.javaClass.simpleName}: ${e.message}")
+		}
 
 		// ── Strategy 3: MadaraParser default fallback ────────────────
+		System.err.println("[HentaiCube] S3: super.getPages()")
 		return super.getPages(chapter)
 	}
 
