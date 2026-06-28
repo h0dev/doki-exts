@@ -24,11 +24,14 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
     companion object {
         private const val REQUEST_DELAY_MS = 350L
         private const val TOKEN_KEY = "Bearer eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJBbG9uZSBGb3JldmVyIiwiY29taWNJZHMiOltdLCJyb2xlSWQiOm51bGwsImdyb3VwSWQiOm51bGwsImFkbWluIjpmYWxzZSwicmFuayI6MCwicGVybWlzc2lvbiI6W10sImlkIjoiMDAwMTA4NDQyNSIsInRlYW0iOmZhbHNlLCJpYXQiOjE3NTM2OTgyOTAsImVtYWlsIjoibnVsbCJ9.HT080LGjvzfh6XAPmdDZhf5vhnzUhXI4GU8U6tzwlnXWjgMO4VdYL1jsSFWd-s3NBGt-OAt89XnzaQ03iqDyA"
+        private val WEBVIEW_TOKEN_REGEX = Regex(""";\s*wv\)""")
     }
 
     private val requestMutex = Mutex()
     private var lastRequestTime = 0L
     private var cachedToken: String? = null
+
+    private fun sanitizeUserAgent(ua: String): String = WEBVIEW_TOKEN_REGEX.replace(ua, ")")
 
     private suspend fun getAuthToken(): String {
         cachedToken?.let { return it }
@@ -50,10 +53,41 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         return token
     }
 
-    private suspend fun apiHeaders(): Headers = Headers.Builder()
+    /**
+     * Regular headers for page loads (visiting HTML pages to refresh cookies).
+     */
+    private fun pageHeaders(): Headers = Headers.Builder()
+        .add("Referer", "https://$domain/")
+        .add("User-Agent", sanitizeUserAgent(context.getDefaultUserAgent()))
+        .build()
+
+    /**
+     * Full XHR headers matching browser-like requests for API calls.
+     */
+    private suspend fun xhrHeaders(): Headers = Headers.Builder()
         .add("Authorization", getAuthToken())
         .add("Referer", "https://$domain/")
         .add("X-Requested-With", "XMLHttpRequest")
+        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+        .add("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7")
+        .add("Cache-Control", "max-age=0")
+        .add("Sec-Ch-Ua-Mobile", "?1")
+        .add("Sec-Ch-Ua-Platform", "\"Android\"")
+        .add("Sec-Fetch-Dest", "document")
+        .add("Sec-Fetch-Mode", "navigate")
+        .add("Sec-Fetch-Site", "same-origin")
+        .add("Sec-Fetch-User", "?1")
+        .add("Upgrade-Insecure-Requests", "1")
+        .build()
+
+    /**
+     * Headers for page/image loading. Uses Authorization token if available.
+     */
+    private suspend fun pageApiHeaders(): Headers = Headers.Builder()
+        .add("Authorization", getAuthToken())
+        .add("Referer", "https://$domain/")
+        .add("X-Requested-With", "XMLHttpRequest")
+        .add("Origin", "https://$domain")
         .build()
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
@@ -74,7 +108,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
     )
 
     override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val q = filter.query
+        val q = filter.query
         enforceRateLimit()
         val url = buildString {
             append(apiUrl)
@@ -103,7 +137,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             }
         }
 
-        val json = webClient.httpGet(url, extraHeaders = apiHeaders()).parseJson()
+        val json = webClient.httpGet(url, extraHeaders = xhrHeaders()).parseJson()
         val result = json.optJSONObject("result") ?: return emptyList()
         val data = result.optJSONArray("data") ?: return emptyList()
 
@@ -146,23 +180,33 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         val comicId = manga.url.substringBefore(':')
         val slug = manga.url.substringAfter(':')
 
+        // Step 1: Visit manga detail page to refresh session cookies
+        // This is critical — without it, the chapter API may return empty/expired
+        enforceRateLimit()
+        webClient.httpGet(manga.publicUrl, extraHeaders = pageHeaders()).close()
+
+        // Step 2: Fetch chapter list via API
         val chapters = try {
             enforceRateLimit()
-            val chapterApiUrl = "https://$domain/api/comic/$comicId/chapter?limit=-1"
-            val chapterJson = webClient.httpGet(chapterApiUrl, extraHeaders = apiHeaders()).parseJson()
+            val chapterApiUrl = "https://$domain/api/comic/$comicId/chapter?limit=-1#$slug"
+            val chapterJson = webClient.httpGet(chapterApiUrl, extraHeaders = xhrHeaders()).parseJson()
             val chaptersData = chapterJson.getJSONObject("result").getJSONArray("chapters")
+
+            if (chaptersData.length() == 0) {
+                throw Exception("Phiên làm việc đã hết hạn, vui lòng tải lại.")
+            }
 
             List(chaptersData.length()) { i ->
                 val item = chaptersData.getJSONObject(i)
                 val number = item.getString("numberChapter")
                 val name = item.getString("name")
-            val chapterUrl = "/truyen/$slug/chuong-$number#$comicId"
-            MangaChapter(
-                id = generateUid(chapterUrl),
-                title = if (name != "N/A" && name.isNotBlank()) name else "Chapter $number",
-                number = number.toFloatOrNull() ?: -1f,
-                volume = 0,
-                url = chapterUrl,
+                val chapterUrl = "/truyen/$slug/chuong-$number#$comicId"
+                MangaChapter(
+                    id = generateUid(chapterUrl),
+                    title = if (name != "N/A" && name.isNotBlank()) name else "Chapter $number",
+                    number = number.toFloatOrNull() ?: -1f,
+                    volume = 0,
+                    url = chapterUrl,
                     scanlator = null,
                     uploadDate = item.optLong("updateTime", 0L),
                     branch = null,
@@ -170,11 +214,12 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
                 )
             }
         } catch (e: Exception) {
-            emptyList()
+            if (e.message?.contains("hết hạn") == true) throw e
+            throw Exception("Không thể tải danh sách chương. Vui lòng thử lại.")
         }.reversed()
 
-        enforceRateLimit()
-        val doc = webClient.httpGet(manga.publicUrl).parseHtml()
+        // Step 3: Parse detail page for additional info
+        val doc = webClient.httpGet(manga.publicUrl, extraHeaders = pageHeaders()).parseHtml()
 
         val detailTags = doc.select(".group-content > .v-chip-link").mapNotNullTo(mutableSetOf()) { el ->
             availableTags().find { it.title.equals(el.text(), ignoreCase = true) }?.let {
@@ -215,11 +260,11 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             "nameEn" to slug,
         )
         val loadAllUrl = "$apiUrl/chapter/loadAll".toHttpUrl()
-        val json = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = apiHeaders()).parseJson()
+        val json = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = pageApiHeaders()).parseJson()
         val data = json.getJSONObject("result").getJSONArray("data")
 
         if (data.length() == 0) {
-            throw Exception("No images found — possibly session expired. Try refreshing.")
+            throw Exception("Chưa đăng nhập trong WebView. Hoặc không có ảnh!")
         }
 
         return List(data.length()) { i ->
