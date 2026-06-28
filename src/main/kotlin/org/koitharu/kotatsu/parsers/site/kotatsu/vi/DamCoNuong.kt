@@ -2,7 +2,6 @@ package org.koitharu.kotatsu.parsers.site.vi
 
 import okhttp3.Headers
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element // Đảm bảo import Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
 import org.koitharu.kotatsu.parsers.config.ConfigKey
@@ -20,7 +19,7 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 	PagedMangaParser(context, MangaParserSource.DAMCONUONG, 30) {
 
 	// --- Các thuộc tính và hàm khởi tạo ---
-	override val configKeyDomain = ConfigKey.Domain("damconuong.onl")
+	override val configKeyDomain = ConfigKey.Domain("damconuong.mom")
 	private val availableTags = suspendLazy(initializer = ::fetchTags)
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.ALPHABETICAL,
@@ -113,63 +112,45 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 		// Chọn thẻ div chứa từng mục truyện bằng selector 'div.manga-vertical'
 		return doc.select("div.manga-vertical").mapNotNull { element ->
 			try {
-				// Tìm thẻ 'a' bao quanh ảnh bìa, bắt đầu bằng "/truyen/"
-				val coverLinkElement = element.selectFirst("a[href^=\"/truyen/\"]")
-					?: return@mapNotNull null // Bỏ qua nếu không tìm thấy link hợp lệ
+				// Tìm thẻ 'a' bao quanh ảnh bìa, hỗ trợ cả relative "/truyen/" và absolute URL
+				val coverLinkElement = element.selectFirst("a[href*=\"/truyen/\"]")
+					?: return@mapNotNull null
 
-				val href = coverLinkElement.attrAsRelativeUrl("href") // Lấy đường dẫn tương đối
+				val href = coverLinkElement.attrAsRelativeUrl("href")
 
-				// Tìm thẻ 'img' bên trong thẻ 'a' của ảnh bìa
-				val imgElement = coverLinkElement.selectFirst("div.cover-frame img.cover")
-					?: return@mapNotNull null // Bỏ qua nếu không tìm thấy thẻ img
+				// Tìm thẻ 'img' bên trong cover-frame
+				val imgElement = coverLinkElement.selectFirst("div.cover-frame img")
+					?: element.selectFirst("div.cover-frame img")
+					?: return@mapNotNull null
 
-				// Ưu tiên lấy 'data-src' (cho lazy load), nếu không có thì lấy 'src'
-				val rawCoverUrl = imgElement.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:image") }
-					?: imgElement.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:image") }
-					?: return@mapNotNull null // Bỏ qua nếu không có URL ảnh bìa hợp lệ
+				// Ưu tiên lấy 'src' (ảnh load trực tiếp từ CDN), fallback 'data-src' (lazy load)
+				val rawCoverUrl = imgElement.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") && !it.contains("svg") }
+					?: imgElement.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+					?: imgElement.attr("alt").takeIf { it.isNotBlank() && it.startsWith("http") }
+					?: return@mapNotNull null
 
-				// --- Bổ sung logic chuẩn hóa URL ảnh bìa ---
-				var finalCoverUrl = rawCoverUrl.trim() // Loại bỏ khoảng trắng thừa
+				val finalCoverUrl = rawCoverUrl.trim()
 
-				if (finalCoverUrl.startsWith("//")) {
-					// Xử lý URL bắt đầu bằng // (protocol-relative)
-					finalCoverUrl = "https:$finalCoverUrl"
-				} else if (finalCoverUrl.startsWith("/") && finalCoverUrl.contains("mgcdnxyz.cfd")) {
-					 // Xử lý URL sai định dạng: bắt đầu bằng / nhưng chứa domain CDN
-					 finalCoverUrl = "https:$finalCoverUrl"
-				} else if (finalCoverUrl.startsWith("/")) {
-					 // Xử lý URL tương đối bắt đầu bằng / (không chứa domain CDN)
-					 finalCoverUrl = "https://$domain$finalCoverUrl" // Ghép với domain chính
-				} else if (!finalCoverUrl.startsWith("http:") && !finalCoverUrl.startsWith("https:")) {
-					 // Trường hợp URL không có http/https và không bắt đầu bằng / hoặc //
-					 System.err.println("Định dạng URL ảnh bìa không xác định: $finalCoverUrl cho truyện $href")
-					 return@mapNotNull null // Coi như không hợp lệ
-				}
-				// --- Kết thúc logic chuẩn hóa ---
-
-				// Lấy tiêu đề: Ưu tiên thuộc tính 'alt' của ảnh, nếu không có thì lấy text của link tiêu đề bên dưới
 				val title = imgElement.attr("alt").takeIf { it.isNotBlank() }
 					?: element.selectFirst("div.p-3 h3 a")?.text()?.takeIf { it.isNotBlank() }
-					?: "Không có tiêu đề" // Tiêu đề mặc định nếu không tìm thấy
+					?: "Không có tiêu đề"
 
 				Manga(
 					id = generateUid(href),
-					title = title.trim(), // Loại bỏ khoảng trắng thừa ở tiêu đề
+					title = title.trim(),
 					altTitles = emptySet(),
 					url = href,
 					publicUrl = href.toAbsoluteUrl(domain),
 					rating = RATING_UNKNOWN,
 					contentRating = ContentRating.ADULT,
-					coverUrl = finalCoverUrl, // Sử dụng URL đã được chuẩn hóa
+					coverUrl = finalCoverUrl,
 					tags = emptySet(),
 					state = null,
 					authors = emptySet(),
 					source = source,
 				)
 			} catch (e: Exception) {
-				// Ghi log lỗi hoặc xử lý theo cách phù hợp
-				System.err.println("Lỗi khi phân tích mục truyện: ${e.message} - Element HTML: ${element.outerHtml().take(200)}")
-				null // Trả về null để bỏ qua mục này nếu có lỗi xảy ra
+				null
 			}
 		}
 	}
@@ -179,33 +160,39 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 		val url = manga.url.toAbsoluteUrl(domain)
 		val doc = webClient.httpGet(url).parseHtml()
 
-		val altTitles = doc.select("div.mt-2:contains(Tên khác:) span").mapNotNullToSet { it.textOrNull() }
+		val altTitles = doc.select("span:containsOwn(Tên khác:)").mapNotNullToSet {
+			it.parent()?.select("span.text-base")?.textOrNull()
+				?: it.nextElementSibling()?.textOrNull()
+		}
+
 		val allTags = availableTags.getOrNull().orEmpty()
-		val tags = doc.select("div.mt-2:contains(Thể loại:) a").mapNotNullToSet { a ->
+		val tags = doc.select("#genres-list a").mapNotNullToSet { a ->
 			val title = a.text().toTitleCase()
 			allTags.find { x -> x.title == title }
 		}
 
-		val stateText = doc.selectFirst("div.mt-2:contains(Tình trạng:) span")?.text()
-		val state = when (stateText) {
-			"Đang tiến hành" -> MangaState.ONGOING
-			"Đã hoàn thành" -> MangaState.FINISHED
-			else -> null // Hoặc MangaState.UNKNOWN tùy logic
+		val stateText = doc.selectFirst("span:containsOwn(Tình trạng:)")?.parent()?.select("span")?.last()?.text()
+			?: doc.selectFirst("span:containsOwn(Tình trạng:)")?.closest("div")?.select("span")?.lastOrNull()?.text()
+		val state = when {
+			stateText?.contains("Đang tiến hành", ignoreCase = true) == true -> MangaState.ONGOING
+			stateText?.contains("Hoàn thành", ignoreCase = true) == true -> MangaState.FINISHED
+			else -> null
 		}
 
-		val chapterListDiv = doc.selectFirst("ul#chapterList")
+		val chapterListDiv = doc.selectFirst("#chapterList")
 			?: throw ParseException("Không tìm thấy danh sách chapter!", url)
 
 		val chapterLinks = chapterListDiv.select("a.block")
 		val chapters = chapterLinks.mapChapters(reversed = true) { index, a ->
 			val title = a.selectFirst("span.text-ellipsis")?.textOrNull()
+				?: a.selectFirst("div.grow span")?.textOrNull()
 			val href = a.attrAsRelativeUrl("href")
 			val uploadDateText = a.selectFirst("span.ml-2.whitespace-nowrap")?.text()
 
 			MangaChapter(
 				id = generateUid(href),
 				title = title,
-				number = index + 1f, // Hoặc logic lấy số chapter khác nếu có
+				number = index + 1f,
 				volume = 0,
 				url = href,
 				scanlator = null,
@@ -215,63 +202,50 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 			)
 		}
 
-		// Lấy mô tả truyện (kiểm tra lại selector nếu cần)
-		val description = doc.selectFirst("div.manga-info p.description")?.text()
+		val description = doc.selectFirst("div.prose.dark\\:prose-invert")?.text()
+
+		val author = doc.selectFirst("span:containsOwn(Author:) ~ span a")?.text()
 
 		return manga.copy(
 			altTitles = altTitles,
 			tags = tags,
 			state = state,
 			chapters = chapters,
-			description = description
+			description = description,
+			author = author,
 		)
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        val url = chapter.url.toAbsoluteUrl(domain)
-        val doc = webClient.httpGet(url).parseHtml()
+		val url = chapter.url.toAbsoluteUrl(domain)
+		val doc = webClient.httpGet(url).parseHtml()
 
-        // Chọn container chứa ảnh dựa trên HTML mới
-        val contentDiv = doc.selectFirst("div#chapter-content")
-            ?: throw ParseException("Không tìm thấy div#chapter-content chứa ảnh", url)
+		val contentDiv = doc.selectFirst("#chapter-content")
+			?: throw ParseException("Không tìm thấy div#chapter-content chứa ảnh", url)
 
-        // Lấy tất cả thẻ img bên trong, loại bỏ các thẻ quảng cáo nếu có
-        val images = contentDiv.select("img").mapNotNull { img ->
-            // Thứ tự ưu tiên attribute dựa trên source HTML:
-            // 1. data-original-src: Link ảnh gốc (thường dùng cho lazyload custom)
-            // 2. data-src: Link ảnh lazyload chuẩn
-            // 3. src: Fallback (nhưng cần check xem có phải loading.gif không)
-            val rawUrl = img.attr("data-original-src").takeIf { it.isNotBlank() }
-                ?: img.attr("data-src").takeIf { it.isNotBlank() }
-                ?: img.attr("src").takeIf { it.isNotBlank() }
+		val images = contentDiv.select("img.chapter-img, img[data-index]").mapNotNull { img ->
+			// Ưu tiên data-src (lazy load), sau đó src (trang đầu thường load trực tiếp)
+			val rawUrl = img.attr("data-src").takeIf { it.isNotBlank() && !it.startsWith("data:") }
+				?: img.attr("src").takeIf { it.isNotBlank() && !it.startsWith("data:") && !it.contains("svg") }
 
-            // Bỏ qua nếu không tìm thấy URL hoặc URL là ảnh loading mặc định
-            if (rawUrl == null || rawUrl.contains("loading.gif") || rawUrl.startsWith("data:image")) {
-                return@mapNotNull null
-            }
+			if (rawUrl == null) return@mapNotNull null
 
-            // Chuẩn hóa URL (xử lý protocol-relative // hoặc relative /)
-            var finalUrl = rawUrl.trim()
-            if (finalUrl.startsWith("//")) {
-                finalUrl = "https:$finalUrl"
-            } else if (finalUrl.startsWith("/")) {
-                finalUrl = "https://$domain$finalUrl"
-            }
+			val finalUrl = rawUrl.trim()
 
-            MangaPage(
-                id = generateUid(finalUrl),
-                url = finalUrl,
-                preview = null,
-                source = source
-            )
-        }
+			MangaPage(
+				id = generateUid(finalUrl),
+				url = finalUrl,
+				preview = null,
+				source = source,
+			)
+		}
 
-        if (images.isNotEmpty()) {
-            return images
-        }
+		if (images.isNotEmpty()) {
+			return images
+		}
 
-        throw ParseException("Không tìm thấy danh sách ảnh trong chapter", url)
-    }
+		throw ParseException("Không tìm thấy danh sách ảnh trong chapter", url)
+	}
 
 	// --- Các hàm tiện ích ---
 
@@ -337,14 +311,14 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 		val url = "https://$domain/tim-kiem"
 		return try {
 			val doc = webClient.httpGet(url).parseHtml()
-			// Kết hợp selector cho cả mobile và desktop dựa trên HTML mẫu
-			val genreLinks = doc.select("ul.grid.grid-cols-2 a[href^='/the-loai/'], ul[x-show='open'] a[href^='/the-loai/']")
+			val genreLinks = doc.select("a[href*='/the-loai/']")
+				.filter { it.text().isNotBlank() }
 
 			genreLinks.mapNotNullToSet { a ->
-				val href = a.attr("href") // Ví dụ: /the-loai/16 hoặc /the-loai/action
-				val key = href.substringAfterLast('/') // Lấy phần số hoặc slug sau dấu '/' cuối cùng
-				val title = a.text()?.toTitleCase(sourceLocale) // Lấy text bên trong thẻ 'a'
-				if (key.isNotBlank() && !title.isNullOrBlank()) {
+				val href = a.attr("href")
+				val key = href.substringAfterLast('/')
+				val title = a.text().trim().toTitleCase(sourceLocale)
+				if (key.isNotBlank() && title.isNotBlank() && key != "the-loai") {
 					MangaTag(
 						key = key,
 						title = title,
@@ -355,9 +329,7 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 				}
 			}
 		} catch (e: Exception) {
-			// Ghi log lỗi và trả về set rỗng nếu không fetch được tags
-			System.err.println("Lỗi khi fetch tags từ $url: ${e.message}")
 			emptySet()
 		}
 	}
-} // <-- ✨ Dấu ngoặc nhọn đóng class đã được thêm vào đây
+}
