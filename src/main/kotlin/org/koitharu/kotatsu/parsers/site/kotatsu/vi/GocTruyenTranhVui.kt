@@ -28,14 +28,33 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
 
     private val requestMutex = Mutex()
     private var lastRequestTime = 0L
+    private var cachedToken: String? = null
 
-    private val apiHeaders by lazy {
-        Headers.Builder()
-            .add("Authorization", TOKEN_KEY)
-            .add("Referer", "https://$domain/")
-            .add("X-Requested-With", "XMLHttpRequest")
-            .build()
+    private suspend fun getAuthToken(): String {
+        cachedToken?.let { return it }
+
+        // Try extracting from WebView localStorage (works on Android)
+        val webToken = try {
+            context.evaluateJs(
+                "https://$domain",
+                "window.localStorage.getItem('Authorization')"
+            )?.removeSurrounding("\"")
+        } catch (_: Exception) { null }
+
+        val token = if (!webToken.isNullOrBlank() && webToken != "null") {
+            "Bearer $webToken"
+        } else {
+            TOKEN_KEY // Fallback to hardcoded token
+        }
+        cachedToken = token
+        return token
     }
+
+    private suspend fun apiHeaders(): Headers = Headers.Builder()
+        .add("Authorization", getAuthToken())
+        .add("Referer", "https://$domain/")
+        .add("X-Requested-With", "XMLHttpRequest")
+        .build()
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.UPDATED,
@@ -84,7 +103,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             }
         }
 
-        val json = webClient.httpGet(url, extraHeaders = apiHeaders).parseJson()
+        val json = webClient.httpGet(url, extraHeaders = apiHeaders()).parseJson()
         val result = json.optJSONObject("result") ?: return emptyList()
         val data = result.optJSONArray("data") ?: return emptyList()
 
@@ -130,7 +149,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         val chapters = try {
             enforceRateLimit()
             val chapterApiUrl = "https://$domain/api/comic/$comicId/chapter?limit=-1"
-            val chapterJson = webClient.httpGet(chapterApiUrl, extraHeaders = apiHeaders).parseJson()
+            val chapterJson = webClient.httpGet(chapterApiUrl, extraHeaders = apiHeaders()).parseJson()
             val chaptersData = chapterJson.getJSONObject("result").getJSONArray("chapters")
 
             List(chaptersData.length()) { i ->
@@ -196,7 +215,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             "nameEn" to slug,
         )
         val loadAllUrl = "$apiUrl/chapter/loadAll".toHttpUrl()
-        val json = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = apiHeaders).parseJson()
+        val json = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = apiHeaders()).parseJson()
         val data = json.getJSONObject("result").getJSONArray("data")
 
         if (data.length() == 0) {
