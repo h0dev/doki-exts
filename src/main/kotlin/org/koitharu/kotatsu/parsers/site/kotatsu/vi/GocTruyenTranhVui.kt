@@ -18,7 +18,7 @@ import java.util.*
 @MangaSourceParser("GOCTRUYENTRANHVUI", "Góc Truyện Tranh Vui", "vi")
 internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.GOCTRUYENTRANHVUI, 50) {
 
-    override val configKeyDomain = ConfigKey.Domain("goctruyentranhvui17.com")
+    override val configKeyDomain = ConfigKey.Domain("goctruyentranhvui30.com")
     private val apiUrl by lazy { "https://$domain/api/v2" }
 
     companion object {
@@ -137,13 +137,13 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
                 val item = chaptersData.getJSONObject(i)
                 val number = item.getString("numberChapter")
                 val name = item.getString("name")
-                val chapterUrl = "/truyen/$slug/chuong-$number"
-                MangaChapter(
-                    id = generateUid(chapterUrl),
-                    title = if (name != "N/A" && name.isNotBlank()) name else "Chapter $number",
-                    number = number.toFloatOrNull() ?: -1f,
-                    volume = 0,
-                    url = chapterUrl,
+            val chapterUrl = "/truyen/$slug/chuong-$number#$comicId"
+            MangaChapter(
+                id = generateUid(chapterUrl),
+                title = if (name != "N/A" && name.isNotBlank()) name else "Chapter $number",
+                number = number.toFloatOrNull() ?: -1f,
+                volume = 0,
+                url = chapterUrl,
                     scanlator = null,
                     uploadDate = item.optLong("updateTime", 0L),
                     branch = null,
@@ -180,38 +180,31 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         enforceRateLimit()
-        val responseBody = webClient.httpGet(chapter.url.toAbsoluteUrl(domain)).body?.string()
-            ?: throw Exception("Response body is null for chapter page")
 
-        val chapterJsonRaw = responseBody.substringAfter("chapterJson: `", "").substringBefore("`", "")
+        val chapterUrl = chapter.url
+        val slug = chapterUrl.substringAfter("/truyen/").substringBefore("/chuong-")
+        val numberChapter = chapterUrl.substringAfter("/chuong-").substringBefore("#")
+        val comicId = chapterUrl.substringAfter("#")
 
-        val imageUrls: List<String>
-        if (chapterJsonRaw.isNotBlank()) {
-            val json = JSONObject(chapterJsonRaw)
-            val data = json.getJSONObject("body").getJSONObject("result").getJSONArray("data")
-            imageUrls = List(data.length()) { i -> data.getString(i) }
-        } else {
-            // Fallback: Call the authenticated API
-            val comicId = responseBody.substringAfter("comic = {id:\"", "").substringBefore("\"", "")
-            val chapterNumber = chapter.url.substringAfterLast("chuong-")
-            val nameEn = chapter.url.substringAfter("/truyen/").substringBefore("/chuong-")
-
-            if (comicId.isBlank()) {
-                throw Exception("Cannot find comicId in HTML for fallback image request")
-            }
-
-            val formBody = mapOf(
-                "comicId" to comicId,
-                "chapterNumber" to chapterNumber,
-                "nameEn" to nameEn
-            )
-            val authApiUrl = "$apiUrl/chapter/auth".toHttpUrl()
-            val authResponse = webClient.httpPost(url = authApiUrl, form = formBody, extraHeaders = apiHeaders).parseJson()
-            val data = authResponse.getJSONObject("result").getJSONArray("data")
-            imageUrls = List(data.length()) { i -> data.getString(i) }
+        if (comicId.isBlank()) {
+            throw Exception("Cannot find comicId in chapter URL: ${chapter.url}")
         }
 
-        return imageUrls.map { url ->
+        val formBody = mapOf(
+            "comicId" to comicId,
+            "chapterNumber" to numberChapter,
+            "nameEn" to slug,
+        )
+        val loadAllUrl = "$apiUrl/chapter/loadAll".toHttpUrl()
+        val json = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = apiHeaders).parseJson()
+        val data = json.getJSONObject("result").getJSONArray("data")
+
+        if (data.length() == 0) {
+            throw Exception("No images found — possibly session expired. Try refreshing.")
+        }
+
+        return List(data.length()) { i ->
+            val url = data.getString(i)
             val finalUrl = if (url.startsWith("/image/")) "https://$domain$url" else url
             MangaPage(id = generateUid(finalUrl), url = finalUrl, preview = null, source = source)
         }
