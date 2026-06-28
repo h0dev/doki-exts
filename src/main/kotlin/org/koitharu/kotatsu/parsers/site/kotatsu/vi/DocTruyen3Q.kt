@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.wpcomics.vi
 
+import okhttp3.Headers
 import org.jsoup.nodes.Document
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -11,9 +12,13 @@ import java.util.*
 
 @MangaSourceParser("DOCTRUYEN3Q", "DocTruyen3Q", "vi")
 internal class DocTruyen3Q(context: MangaLoaderContext) :
-	WpComicsParser(context, MangaParserSource.DOCTRUYEN3Q, "DocTruyen3Qui14.Pro", 36) {
+	WpComicsParser(context, MangaParserSource.DOCTRUYEN3Q, "doctruyen3qhub1.com", 36) {
 
 	override val datePattern = "dd/MM/yyyy"
+
+	override fun getRequestHeaders(): Headers = Headers.Builder()
+		.add("referer", "https://$domain/")
+		.build()
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.UPDATED,
