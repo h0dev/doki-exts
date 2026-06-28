@@ -206,13 +206,15 @@ internal class DamCoNuong(context: MangaLoaderContext) :
 
 		val author = doc.selectFirst("span:containsOwn(Author:) ~ span a")?.text()
 
+		val authors = if (!author.isNullOrEmpty()) setOf(author) else emptySet()
+
 		return manga.copy(
 			altTitles = altTitles,
 			tags = tags,
 			state = state,
 			chapters = chapters,
 			description = description,
-			author = author,
+			authors = authors,
 		)
 	}
 
