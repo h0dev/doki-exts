@@ -34,20 +34,31 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
     private fun sanitizeUserAgent(ua: String): String = WEBVIEW_TOKEN_REGEX.replace(ua, ")")
 
     private suspend fun getAuthToken(): String {
-        cachedToken?.let { return it }
+        cachedToken?.let {
+            println("[GTTV] token: using cached token (prefix=${it.take(30)}...)")
+            return it
+        }
 
         // Try extracting from WebView localStorage (works on Android)
         val webToken = try {
-            context.evaluateJs(
+            println("[GTTV] token: trying evaluateJs...")
+            val raw = context.evaluateJs(
                 "https://$domain",
                 "window.localStorage.getItem('Authorization')"
-            )?.removeSurrounding("\"")
-        } catch (_: Exception) { null }
+            )
+            println("[GTTV] token: evaluateJs returned: $raw")
+            raw?.removeSurrounding("\"")
+        } catch (e: Exception) {
+            println("[GTTV] token: evaluateJs failed: ${e.message}")
+            null
+        }
 
         val token = if (!webToken.isNullOrBlank() && webToken != "null") {
+            println("[GTTV] token: using WebView token (prefix=${webToken.take(30)}...)")
             "Bearer $webToken"
         } else {
-            TOKEN_KEY // Fallback to hardcoded token
+            println("[GTTV] token: fallback to hardcoded TOKEN_KEY")
+            TOKEN_KEY
         }
         cachedToken = token
         return token
@@ -78,7 +89,9 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         .add("Sec-Fetch-Site", "same-origin")
         .add("Sec-Fetch-User", "?1")
         .add("Upgrade-Insecure-Requests", "1")
-        .build()
+        .build().also {
+            println("[GTTV] xhrHeaders: Authorization=${it["Authorization"]?.take(30)}...")
+        }
 
     /**
      * Headers for page/image loading. Uses Authorization token if available.
@@ -138,8 +151,10 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         }
 
         val json = webClient.httpGet(url, extraHeaders = xhrHeaders()).parseJson()
-        val result = json.optJSONObject("result") ?: return emptyList()
-        val data = result.optJSONArray("data") ?: return emptyList()
+        val result = json.optJSONObject("result")
+        val data = result?.optJSONArray("data")
+        println("[GTTV] getListPage page=$page url=$url result=${result != null} dataCount=${data?.length() ?: 0}")
+        if (data == null) return emptyList()
 
         return List(data.length()) { i ->
             val item = data.getJSONObject(i)
@@ -179,18 +194,27 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
     override suspend fun getDetails(manga: Manga): Manga {
         val comicId = manga.url.substringBefore(':')
         val slug = manga.url.substringAfter(':')
+        println("[GTTV] getDetails comicId=$comicId slug=$slug publicUrl=${manga.publicUrl}")
 
         // Step 1: Visit manga detail page to refresh session cookies
-        // This is critical — without it, the chapter API may return empty/expired
         enforceRateLimit()
-        webClient.httpGet(manga.publicUrl, extraHeaders = pageHeaders()).close()
+        println("[GTTV] Step1: refreshing cookies via ${manga.publicUrl}")
+        val refreshResp = webClient.httpGet(manga.publicUrl, extraHeaders = pageHeaders())
+        println("[GTTV] Step1: status=${refreshResp.code}")
+        refreshResp.close()
 
         // Step 2: Fetch chapter list via API
         val chapters = try {
             enforceRateLimit()
-            val chapterApiUrl = "https://$domain/api/comic/$comicId/chapter?limit=-1#$slug"
-            val chapterJson = webClient.httpGet(chapterApiUrl, extraHeaders = xhrHeaders()).parseJson()
+            val chapterApiUrl = "https://$domain/api/comic/$comicId/chapter?limit=-1"
+            println("[GTTV] Step2: fetching chapters from $chapterApiUrl")
+            val chapterResp = webClient.httpGet(chapterApiUrl, extraHeaders = xhrHeaders())
+            println("[GTTV] Step2: status=${chapterResp.code}")
+            val chapterBody = chapterResp.body?.string().orEmpty()
+            println("[GTTV] Step2: body=${chapterBody.take(500)}")
+            val chapterJson = chapterBody.parseJson()
             val chaptersData = chapterJson.getJSONObject("result").getJSONArray("chapters")
+            println("[GTTV] Step2: found ${chaptersData.length()} chapters")
 
             if (chaptersData.length() == 0) {
                 throw Exception("Phiên làm việc đã hết hạn, vui lòng tải lại.")
@@ -214,8 +238,9 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
                 )
             }
         } catch (e: Exception) {
+            println("[GTTV] Step2 ERROR: ${e.javaClass.simpleName}: ${e.message}")
             if (e.message?.contains("hết hạn") == true) throw e
-            throw Exception("Không thể tải danh sách chương. Vui lòng thử lại.")
+            throw Exception("Không thể tải danh sách chương. Vui lòng thử lại.\n${e.message}")
         }.reversed()
 
         // Step 3: Parse detail page for additional info
@@ -249,6 +274,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         val slug = chapterUrl.substringAfter("/truyen/").substringBefore("/chuong-")
         val numberChapter = chapterUrl.substringAfter("/chuong-").substringBefore("#")
         val comicId = chapterUrl.substringAfter("#")
+        println("[GTTV] getPages slug=$slug chapter=$numberChapter comicId=$comicId")
 
         if (comicId.isBlank()) {
             throw Exception("Cannot find comicId in chapter URL: ${chapter.url}")
@@ -260,8 +286,14 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             "nameEn" to slug,
         )
         val loadAllUrl = "$apiUrl/chapter/loadAll".toHttpUrl()
-        val json = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = pageApiHeaders()).parseJson()
+        println("[GTTV] getPages: POST $loadAllUrl")
+        val resp = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = pageApiHeaders())
+        println("[GTTV] getPages: status=${resp.code}")
+        val body = resp.body?.string().orEmpty()
+        println("[GTTV] getPages: body=${body.take(500)}")
+        val json = body.parseJson()
         val data = json.getJSONObject("result").getJSONArray("data")
+        println("[GTTV] getPages: found ${data.length()} images")
 
         if (data.length() == 0) {
             throw Exception("Chưa đăng nhập trong WebView. Hoặc không có ảnh!")
