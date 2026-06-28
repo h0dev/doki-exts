@@ -212,7 +212,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             println("[GTTV] Step2: status=${chapterResp.code}")
             val chapterBody = chapterResp.body?.string().orEmpty()
             println("[GTTV] Step2: body=${chapterBody.take(500)}")
-            val chapterJson = chapterBody.parseJson()
+            val chapterJson = JSONObject(chapterBody)
             val chaptersData = chapterJson.getJSONObject("result").getJSONArray("chapters")
             println("[GTTV] Step2: found ${chaptersData.length()} chapters")
 
@@ -291,7 +291,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         println("[GTTV] getPages: status=${resp.code}")
         val body = resp.body?.string().orEmpty()
         println("[GTTV] getPages: body=${body.take(500)}")
-        val json = body.parseJson()
+        val json = JSONObject(body)
         val data = json.getJSONObject("result").getJSONArray("data")
         println("[GTTV] getPages: found ${data.length()} images")
 
