@@ -214,27 +214,23 @@ internal class DocTruyen3Q(context: MangaLoaderContext) :
 	}
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-	    val fullUrl = chapter.url.toAbsoluteUrl(domain)
-	    val doc = webClient.httpGet(fullUrl).parseHtml()
-	
-	    var urls = doc.select("div.page-chapter img")
-	        .mapNotNull { it.attrAsRelativeUrlOrNull("data-original") }
-	        .filterNot { filterAdsUrls(it) }
-	
-	    if (urls.isEmpty()) {
-	        urls = doc.select("div.page-chapter img")
-	            .mapNotNull { it.attrAsRelativeUrlOrNull("src") }
-	            .filterNot { filterAdsUrls(it) }
-	    }
-	
-	    return urls.map { url ->
-	        MangaPage(
-	            id = generateUid(url),
-	            url = url,
-	            preview = null,
-	            source = source,
-	        )
-	    }
+		val fullUrl = chapter.url.toAbsoluteUrl(domain)
+		val doc = webClient.httpGet(fullUrl).parseHtml()
+
+		return doc.select("div.page-chapter[id] img").mapIndexedNotNull { index, img ->
+			val rawUrl = img.attrAsRelativeUrlOrNull("src")
+				?.takeIf { it.isNotBlank() && !it.contains("data:image") && !filterAdsUrls(it) }
+				?: img.attrAsRelativeUrlOrNull("data-src")
+					?.takeIf { it.isNotBlank() && !it.contains("data:image") && !filterAdsUrls(it) }
+				?: return@mapIndexedNotNull null
+
+			MangaPage(
+				id = generateUid(rawUrl),
+				url = rawUrl,
+				preview = null,
+				source = source,
+			)
+		}.distinctBy { it.url }
 	}
 
 	private fun filterAdsUrls(url: String): Boolean {
