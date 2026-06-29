@@ -25,6 +25,7 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
 
     companion object {
         private const val PLACEHOLDER_IMAGE_URL = "https://hentaivn.su/placeholder-error.webp"
+        private const val MANGA_PER_PAGE = 24
     }
 
     override val configKeyDomain: ConfigKey.Domain = ConfigKey.Domain("hentaivn.su")
@@ -40,8 +41,7 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
         try {
             val response = webClient.httpGet("/api/user/me".toAbsoluteUrl(domain))
             if (response.isSuccessful) {
-                val userJson = response.body!!.string()
-                val obj = JSONObject(userJson)
+                val obj = JSONObject(response.body!!.string())
                 return obj.optString("displayName").ifBlank { obj.getString("username") }
             } else {
                 throw IllegalStateException("Failed to get user info: ${response.code}")
@@ -80,7 +80,7 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
 
     override suspend fun getList(offset: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
         val q = filter.query
-        val page = (offset / 24f).toIntUp() + 1
+        val page = (offset / MANGA_PER_PAGE.toFloat()).toIntUp() + 1
         val apiUrl = buildString {
             append("/api/library/")
             when {
@@ -104,19 +104,18 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
             val obj = JSONObject(responseJson)
             val data = obj.getJSONArray("data")
             (0 until data.length()).map { parseMangaListItem(data.getJSONObject(it)) }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             val arr = JSONArray(responseJson)
             (0 until arr.length()).map { parseMangaListItem(arr.getJSONObject(it)) }
         }
 
         return mangaList.filterNot { it.blocked }.map { item ->
-            val finalCoverUrl = item.coverUrl?.takeIf { it.isNotBlank() } ?: PLACEHOLDER_IMAGE_URL
             Manga(
                 id = generateUid(item.id.toString()),
                 title = item.title,
                 url = "/manga/${item.id}",
                 publicUrl = "/manga/${item.id}".toAbsoluteUrl(domain),
-                coverUrl = finalCoverUrl.toAbsoluteUrl(domain),
+                coverUrl = item.coverUrl?.takeIf { it.isNotBlank() }?.toAbsoluteUrl(domain),
                 authors = setOfNotNull(item.authors),
                 tags = item.genres.mapToSet { genre -> MangaTag(genre.name, genre.id.toString(), source) },
                 source = source,
@@ -140,12 +139,11 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
         val details = detailsDeferred.await()
         val chapters = chaptersDeferred.await()
 
-        val finalCoverUrl = details.coverUrl?.takeIf { it.isNotBlank() } ?: PLACEHOLDER_IMAGE_URL
         manga.copy(
-            coverUrl = finalCoverUrl.toAbsoluteUrl(domain),
+            coverUrl = details.coverUrl?.takeIf { it.isNotBlank() }?.toAbsoluteUrl(domain),
             altTitles = details.alternativeTitles.toSet(),
             authors = details.authors.mapToSet { it.name },
-            description = details.description ?: "",
+            description = details.description.orEmpty(),
             tags = details.genres.mapToSet { genre -> MangaTag(genre.name, genre.id.toString(), source) },
             chapters = chapters.map { it.copy(scanlator = details.uploader?.name) }
         )
@@ -170,7 +168,9 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
                     branch = null
                 )
             }
-        } catch (e: Exception) { emptyList() }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
@@ -181,12 +181,11 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
         val pages = obj.getJSONArray("pages")
 
         return (0 until pages.length()).mapNotNull { i ->
-            val imageUrl = pages.optJSONObject(i)?.optString("imageUrl")
-                ?: pages.optString(i).takeIf { it.isNotBlank() && it != "null" }
-            val finalUrl = imageUrl?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val imageUrl = pages.optString(i).takeIf { it.isNotBlank() && it != "null" }
+                ?: return@mapNotNull null
             MangaPage(
-                id = generateUid(finalUrl),
-                url = finalUrl.toAbsoluteUrl(domain),
+                id = generateUid(imageUrl),
+                url = imageUrl.toAbsoluteUrl(domain),
                 source = source,
                 preview = null
             )
@@ -258,7 +257,7 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
     private fun parseGenreItem(obj: JSONObject) = GenreItem(obj.getInt("id"), obj.getString("name"))
     private fun parseAuthorItem(obj: JSONObject) = AuthorItem(obj.getInt("id"), obj.getString("name"))
 
-    // --- DATA CLASSES (no longer @Serializable) ---
+    // --- DATA CLASSES ---
     private data class MangaListItem(val id: Int, val title: String, val coverUrl: String?, val authors: String? = null, val genres: List<GenreItem> = emptyList(), val blocked: Boolean = false)
     private data class GenreItem(val id: Int, val name: String)
     private data class AuthorItem(val id: Int, val name: String)
@@ -268,14 +267,13 @@ internal class HentaiVNParser(context: MangaLoaderContext) :
     private fun parseDate(dateStr: String?): Long? {
         if (dateStr == null) return null
         val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSSSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-
         return try {
             sdf.parse(dateStr)?.time
-        } catch (e: ParseException) {
+        } catch (_: ParseException) {
             try {
                 val simplerSdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
                 simplerSdf.parse(dateStr)?.time
-            } catch (e2: ParseException) { null }
+            } catch (_: ParseException) { null }
         }
     }
 }
