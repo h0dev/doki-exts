@@ -168,10 +168,11 @@ internal class ViHentai(context: MangaLoaderContext) :
 	// ======================== List ========================
 
 	override suspend fun getListPage(page: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
+		val q = filter.query
 		val url = buildString {
-			if (!filter.query.isNullOrEmpty()) {
+			if (!q.isNullOrEmpty()) {
 				append("https://$domain/tim-kiem")
-				append("?keyword=${filter.query.urlEncoded()}")
+				append("?keyword=${q.urlEncoded()}")
 				append("&page=$page")
 			} else {
 				append("https://$domain/danh-sach")
