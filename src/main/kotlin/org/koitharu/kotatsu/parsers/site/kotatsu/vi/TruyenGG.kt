@@ -139,7 +139,7 @@ internal class TruyenGG(context: MangaLoaderContext) : PagedMangaParser(context,
 
 	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-		val author = doc.selectFirst("span:contains(Tác Giả) + span")?.text().nullIfEmpty()
+		val author = doc.selectFirst("span:contains(Tác Giả) + span")?.text()?.nullIfEmpty()
 
 		return manga.copy(
 			altTitles = setOfNotNull(doc.selectFirst("h2.other-name")?.textOrNull()),
