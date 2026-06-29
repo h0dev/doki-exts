@@ -15,9 +15,9 @@ import org.koitharu.kotatsu.parsers.util.*
 import java.net.URL
 import java.util.*
 
-@MangaSourceParser("MEHENTAIVN", "MeHentaiVN", "vi", ContentType.HENTAI)
-internal class MeHentaiVN(context: MangaLoaderContext) :
-	WpComicsParser(context, MangaParserSource.MEHENTAIVN, "www.hentaivnx.autos", 44) {
+@MangaSourceParser("MEHENTAIVN", "HentaiVNX", "vi", ContentType.HENTAI)
+internal class HentaiVNX(context: MangaLoaderContext) :
+	WpComicsParser(context, MangaParserSource.MEHENTAIVN, "www.hentaivnx.com", 44) {
 
 	override fun getRequestHeaders() = super.getRequestHeaders().newBuilder()
 		.add("referer", "https://$domain/")
