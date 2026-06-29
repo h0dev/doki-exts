@@ -12,7 +12,7 @@ import java.util.*
 @MangaSourceParser("TRUYENGG", "FoxTruyen", "vi")
 internal class TruyenGG(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.TRUYENGG, 42) {
 
-	override val configKeyDomain = ConfigKey.Domain("foxtruyen.com")
+	override val configKeyDomain = ConfigKey.Domain("foxtruyen2.com")
 
 	override val availableSortOrders: Set<SortOrder> = EnumSet.of(
 		SortOrder.NEWEST,
@@ -139,38 +139,36 @@ internal class TruyenGG(context: MangaLoaderContext) : PagedMangaParser(context,
 
 	override suspend fun getDetails(manga: Manga): Manga {
 		val doc = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
-		val dateFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
-		val author = doc.select("p:contains(Tác Giả) + p").joinToString { it.text() }.nullIfEmpty()
+		val author = doc.selectFirst("span:contains(Tác Giả) + span")?.text().nullIfEmpty()
 
 		return manga.copy(
 			altTitles = setOfNotNull(doc.selectFirst("h2.other-name")?.textOrNull()),
 			authors = setOfNotNull(author),
-			tags = doc.select("a.clblue").mapToSet {
+			tags = doc.select(".fx-genres a").mapToSet {
 				MangaTag(
 					key = it.attr("href").substringAfterLast('-').substringBeforeLast('.'),
 					title = it.text().toTitleCase(sourceLocale),
 					source = source,
 				)
 			},
-			description = doc.select("div.story-detail-info").text(),
-			state = when (doc.select("p:contains(Trạng Thái) + p").text()) {
-				"Đang Cập Nhật" -> MangaState.ONGOING
-				"Hoàn Thành" -> MangaState.FINISHED
-				else -> null
-			},
-			chapters = doc.select("ul.list_chap > li.item_chap").mapChapters(reversed = true) { i, div ->
+			description = doc.selectFirst("div.fx-synopsis div")?.wholeText()?.trim(),
+			coverUrl = doc.selectFirst(".fx-cover img")?.attrAsAbsoluteUrlOrNull("src"),
+			state = parseStatus(doc.select(".fx-status").text()),
+			chapters = doc.select("ul.fx-chap-list li.fx-chap-item").mapChapters(reversed = true) { i, div ->
 				val a = div.selectFirstOrThrow("a")
 				val href = a.attrAsRelativeUrl("href")
 				val name = a.text()
-				val dateText = div.select("span.cl99").text()
+				val dateText = div.selectFirst("span.fx-chap-item__date")?.text()
+				val number = href.substringAfterLast("/chuong-").substringBefore(".").substringBefore("-")
+					.toFloatOrNull() ?: (i + 1f)
 				MangaChapter(
 					id = generateUid(href),
 					title = name,
-					number = i + 1f,
+					number = number,
 					volume = 0,
 					url = href,
 					scanlator = null,
-					uploadDate = dateFormat.parseSafe(dateText),
+					uploadDate = DATE_FORMAT.parseSafe(dateText),
 					branch = null,
 					source = source,
 				)
@@ -202,4 +200,19 @@ internal class TruyenGG(context: MangaLoaderContext) : PagedMangaParser(context,
 			)
 		}
 	}
-} 
+
+	private fun parseStatus(status: String?): MangaState? {
+		if (status == null) return null
+		val lower = status.lowercase()
+		return when {
+			listOf("đang cập nhật", "đang tiến hành", "còn tiếp").any { lower.contains(it) } -> MangaState.ONGOING
+			listOf("hoàn thành", "đã hoàn thành", "hoàn").any { lower.contains(it) } -> MangaState.FINISHED
+			listOf("tạm ngưng", "tạm hoãn").any { lower.contains(it) } -> MangaState.PAUSED
+			else -> null
+		}
+	}
+
+	companion object {
+		private val DATE_FORMAT = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
+	}
+}

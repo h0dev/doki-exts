@@ -35,79 +35,51 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
     private fun sanitizeUserAgent(ua: String): String = WEBVIEW_TOKEN_REGEX.replace(ua, ")")
 
     private suspend fun getAuthToken(): String {
-        cachedToken?.let {
-            println("[GTTV] token: using cached token (prefix=${it.take(30)}...)")
-            return it
-        }
+        cachedToken?.let { return it }
 
-        // Try extracting from WebView localStorage (works on Android)
         val webToken = try {
-            println("[GTTV] token: trying evaluateJs...")
             val raw = context.evaluateJs(
                 "https://$domain",
                 "window.localStorage.getItem('Authorization')"
             )
-            println("[GTTV] token: evaluateJs returned: $raw")
             raw?.removeSurrounding("\"")
-        } catch (e: Exception) {
-            println("[GTTV] token: evaluateJs failed: ${e.message}")
+        } catch (_: Exception) {
             null
         }
 
         val token = if (!webToken.isNullOrBlank() && webToken != "null") {
-            println("[GTTV] token: using WebView token (prefix=${webToken.take(30)}...)")
             "Bearer $webToken"
         } else {
-            println("[GTTV] token: fallback to hardcoded TOKEN_KEY")
             TOKEN_KEY
         }
         cachedToken = token
         return token
     }
 
-    /**
-     * Regular headers for page loads (visiting HTML pages to refresh cookies).
-     */
     private fun pageHeaders(): Headers = Headers.Builder()
         .add("Referer", "https://$domain/")
         .add("User-Agent", sanitizeUserAgent(context.getDefaultUserAgent()))
         .build()
 
-    /**
-     * Full XHR headers matching browser-like requests for API calls.
-     */
     private suspend fun xhrHeaders(): Headers = Headers.Builder()
         .add("Authorization", getAuthToken())
         .add("Referer", "https://$domain/")
         .add("X-Requested-With", "XMLHttpRequest")
-        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+        .add("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
         .add("Accept-Language", "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7")
         .add("Cache-Control", "max-age=0")
-        .add("Sec-Ch-Ua-Mobile", "?1")
-        .add("Sec-Ch-Ua-Platform", "\"Android\"")
         .add("Sec-Fetch-Dest", "document")
         .add("Sec-Fetch-Mode", "navigate")
         .add("Sec-Fetch-Site", "same-origin")
         .add("Sec-Fetch-User", "?1")
         .add("Upgrade-Insecure-Requests", "1")
-        .build().also {
-            println("[GTTV] xhrHeaders: Authorization=${it["Authorization"]?.take(30)}...")
-        }
+        .build()
 
-    /**
-     * Headers for chapter/image API. Matches keiyoushi's pageHeaders.
-     * Uses token if available, falls back to xhrHeaders.
-     */
-    private suspend fun pageApiHeaders(): Headers {
-        val token = getAuthToken()
-        return Headers.Builder()
-            .add("X-Requested-With", "XMLHttpRequest")
-            .add("Origin", baseUrl)
-            .add("Authorization", token)
-            .build().also {
-                println("[GTTV] pageApiHeaders: Authorization=${it["Authorization"]?.take(30)}...")
-            }
-    }
+    private suspend fun pageApiHeaders(): Headers = Headers.Builder()
+        .add("X-Requested-With", "XMLHttpRequest")
+        .add("Origin", baseUrl)
+        .add("Authorization", getAuthToken())
+        .build()
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.UPDATED,
@@ -158,9 +130,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
 
         val json = webClient.httpGet(url, extraHeaders = xhrHeaders()).parseJson()
         val result = json.optJSONObject("result")
-        val data = result?.optJSONArray("data")
-        println("[GTTV] getListPage page=$page url=$url result=${result != null} dataCount=${data?.length() ?: 0}")
-        if (data == null) return emptyList()
+        val data = result?.optJSONArray("data") ?: return emptyList()
 
         return List(data.length()) { i ->
             val item = data.getJSONObject(i)
@@ -180,7 +150,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
                 id = generateUid(comicId),
                 title = item.getString("name"),
                 altTitles = item.optString("otherName", "").split(",").mapNotNull { it.trim().takeIf(String::isNotBlank) }.toSet(),
-                url = "$comicId:$slug", // Store both id and slug, separated by ':'
+                url = "$comicId:$slug",
                 publicUrl = "https://$domain$mangaUrl",
                 rating = item.optDouble("evaluationScore", 0.0).toFloat(),
                 contentRating = null,
@@ -200,28 +170,19 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
     override suspend fun getDetails(manga: Manga): Manga {
         val comicId = manga.url.substringBefore(':')
         val slug = manga.url.substringAfter(':')
-        println("[GTTV] getDetails START comicId=$comicId slug=$slug url=${manga.url} publicUrl=${manga.publicUrl}")
 
-        try {
-            // Step 1: Visit manga detail page to refresh session cookies
-            enforceRateLimit()
-            println("[GTTV] Step1: refreshing cookies via ${manga.publicUrl}")
-            val refreshResp = webClient.httpGet(manga.publicUrl, extraHeaders = pageHeaders())
-            println("[GTTV] Step1: status=${refreshResp.code}")
-            refreshResp.close()
+        // Step 1: Visit manga detail page to refresh session cookies
+        enforceRateLimit()
+        webClient.httpGet(manga.publicUrl, extraHeaders = pageHeaders()).close()
 
         // Step 2: Fetch chapter list via API
         val chapters = try {
             enforceRateLimit()
             val chapterApiUrl = "https://$domain/api/comic/$comicId/chapter?limit=-1"
-            println("[GTTV] Step2: fetching chapters from $chapterApiUrl")
             val chapterResp = webClient.httpGet(chapterApiUrl, extraHeaders = xhrHeaders())
-            println("[GTTV] Step2: status=${chapterResp.code}")
             val chapterBody = chapterResp.body?.string().orEmpty()
-            println("[GTTV] Step2: body=${chapterBody.take(500)}")
             val chapterJson = JSONObject(chapterBody)
             val chaptersData = chapterJson.getJSONObject("result").getJSONArray("chapters")
-            println("[GTTV] Step2: found ${chaptersData.length()} chapters")
 
             if (chaptersData.length() == 0) {
                 throw Exception("Phiên làm việc đã hết hạn, vui lòng tải lại.")
@@ -245,7 +206,6 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
                 )
             }
         } catch (e: Exception) {
-            println("[GTTV] Step2 ERROR: ${e.javaClass.simpleName}: ${e.message}")
             if (e.message?.contains("hết hạn") == true) throw e
             throw Exception("Không thể tải danh sách chương. Vui lòng thử lại.\n${e.message}")
         }.reversed()
@@ -272,58 +232,39 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
             description = doc.selectFirst(".v-card-text")?.text(),
             chapters = chapters
         )
-        } catch (e: Exception) {
-            println("[GTTV] getDetails FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            println("[GTTV] getDetails stacktrace:")
-            e.printStackTrace()
-            throw e
-        }
     }
 
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-        println("[GTTV] getPages START url=${chapter.url}")
-        try {
-            enforceRateLimit()
+        enforceRateLimit()
 
-            val chapterUrl = chapter.url
-            val slug = chapterUrl.substringAfter("/truyen/").substringBefore("/chuong-")
-            val numberChapter = chapterUrl.substringAfter("/chuong-").substringBefore("#")
-            val comicId = chapterUrl.substringAfter("#")
-            println("[GTTV] getPages slug=$slug chapter=$numberChapter comicId=$comicId")
+        val chapterUrl = chapter.url
+        val slug = chapterUrl.substringAfter("/truyen/").substringBefore("/chuong-")
+        val numberChapter = chapterUrl.substringAfter("/chuong-").substringBefore("#")
+        val comicId = chapterUrl.substringAfter("#")
 
-            if (comicId.isBlank()) {
-                throw Exception("Cannot find comicId in chapter URL: ${chapter.url}")
-            }
+        if (comicId.isBlank()) {
+            throw Exception("Cannot find comicId in chapter URL: ${chapter.url}")
+        }
 
-            val formBody = mapOf(
-                "comicId" to comicId,
-                "chapterNumber" to numberChapter,
-                "nameEn" to slug,
-            )
-            val loadAllUrl = "$baseUrl/api/chapter/loadAll".toHttpUrl()
-            println("[GTTV] getPages: POST $loadAllUrl")
-            val resp = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = pageApiHeaders())
-            println("[GTTV] getPages: status=${resp.code}")
-            val body = resp.body?.string().orEmpty()
-            println("[GTTV] getPages: body=${body.take(500)}")
-            val json = JSONObject(body)
-            val data = json.getJSONObject("result").getJSONArray("data")
-            println("[GTTV] getPages: found ${data.length()} images")
+        val formBody = mapOf(
+            "comicId" to comicId,
+            "chapterNumber" to numberChapter,
+            "nameEn" to slug,
+        )
+        val loadAllUrl = "$baseUrl/api/chapter/loadAll".toHttpUrl()
+        val resp = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = pageApiHeaders())
+        val body = resp.body?.string().orEmpty()
+        val json = JSONObject(body)
+        val data = json.getJSONObject("result").getJSONArray("data")
 
-            if (data.length() == 0) {
-                throw Exception("Chưa đăng nhập trong WebView. Hoặc không có ảnh!")
-            }
+        if (data.length() == 0) {
+            throw Exception("Chưa đăng nhập trong WebView. Hoặc không có ảnh!")
+        }
 
-            return List(data.length()) { i ->
-                val url = data.getString(i)
-                val finalUrl = if (url.startsWith("/image/")) "https://$domain$url" else url
-                MangaPage(id = generateUid(finalUrl), url = finalUrl, preview = null, source = source)
-            }
-        } catch (e: Exception) {
-            println("[GTTV] getPages FAILED: ${e.javaClass.simpleName}: ${e.message}")
-            println("[GTTV] getPages stacktrace:")
-            e.printStackTrace()
-            throw e
+        return List(data.length()) { i ->
+            val url = data.getString(i)
+            val finalUrl = if (url.startsWith("/image/")) "https://$domain$url" else url
+            MangaPage(id = generateUid(finalUrl), url = finalUrl, preview = null, source = source)
         }
     }
 
@@ -338,10 +279,6 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         }
     }
 
-    /**
-     * NOTE: This function creates a new Set of MangaTags on every call, which is inefficient.
-     * A better approach is to declare a constant list (private val) and reuse it.
-     */
     private fun availableTags() = arraySetOf(
         MangaTag("Anime", "ANI", source),
         MangaTag("Drama", "DRA", source),
