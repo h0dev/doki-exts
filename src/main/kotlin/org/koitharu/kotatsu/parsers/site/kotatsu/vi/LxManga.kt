@@ -63,14 +63,14 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			}
 
 			if (filter.states.isNotEmpty()) {
-				val statuses = filter.states.joinToString(",") { state ->
+				val statuses = filter.states.mapNotNull { state ->
 					when (state) {
 						MangaState.ONGOING -> "ongoing"
 						MangaState.FINISHED -> "completed"
 						MangaState.PAUSED -> "paused"
-						else -> ""
+						else -> null
 					}
-				}.filter { it.isNotEmpty() }
+				}.joinToString(",")
 				if (statuses.isNotEmpty()) {
 					append("&filter[status]=$statuses")
 				}
@@ -118,9 +118,9 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	}
 
 	private fun getThumbnailUrl(element: Element): String? {
-		return element.absUrl("data-bg")
-			.ifEmpty { parseBackgroundUrl(element.attr("style")) }
-			.ifBlank { null }
+		val bg = element.absUrl("data-bg")
+		if (bg.isNotEmpty()) return bg
+		return parseBackgroundUrl(element.attr("style"))
 	}
 
 	private fun parseBackgroundUrl(styleValue: String?): String? {
@@ -206,7 +206,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			tags = tags,
 			authors = setOfNotNull(author),
 			description = description,
-			scanlator = scanlator,
 			chapters = chapters,
 		)
 	}
@@ -314,7 +313,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	// ======================== Tags ========================
 
-	private fun availableTags(): Set<MangaTag> {
+	private suspend fun availableTags(): Set<MangaTag> {
 		val doc = webClient.httpGet("https://$domain/the-loai").parseHtml()
 
 		return doc.select("nav.grid button").mapNotNull { button ->
