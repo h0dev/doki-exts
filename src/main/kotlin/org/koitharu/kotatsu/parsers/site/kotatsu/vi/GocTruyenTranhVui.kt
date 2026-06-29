@@ -20,6 +20,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
 
     override val configKeyDomain = ConfigKey.Domain("goctruyentranhvui30.com")
     private val apiUrl by lazy { "https://$domain/api/v2" }
+    private val baseUrl get() = "https://$domain"
 
     companion object {
         private const val REQUEST_DELAY_MS = 350L
@@ -94,14 +95,19 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
         }
 
     /**
-     * Headers for page/image loading. Uses Authorization token if available.
+     * Headers for chapter/image API. Matches keiyoushi's pageHeaders.
+     * Uses token if available, falls back to xhrHeaders.
      */
-    private suspend fun pageApiHeaders(): Headers = Headers.Builder()
-        .add("Authorization", getAuthToken())
-        .add("Referer", "https://$domain/")
-        .add("X-Requested-With", "XMLHttpRequest")
-        .add("Origin", "https://$domain")
-        .build()
+    private suspend fun pageApiHeaders(): Headers {
+        val token = getAuthToken()
+        return Headers.Builder()
+            .add("X-Requested-With", "XMLHttpRequest")
+            .add("Origin", baseUrl)
+            .add("Authorization", token)
+            .build().also {
+                println("[GTTV] pageApiHeaders: Authorization=${it["Authorization"]?.take(30)}...")
+            }
+    }
 
     override val availableSortOrders: Set<SortOrder> = EnumSet.of(
         SortOrder.UPDATED,
@@ -294,7 +300,7 @@ internal class GocTruyenTranhVui(context: MangaLoaderContext) : PagedMangaParser
                 "chapterNumber" to numberChapter,
                 "nameEn" to slug,
             )
-            val loadAllUrl = "$apiUrl/chapter/loadAll".toHttpUrl()
+            val loadAllUrl = "$baseUrl/api/chapter/loadAll".toHttpUrl()
             println("[GTTV] getPages: POST $loadAllUrl")
             val resp = webClient.httpPost(url = loadAllUrl, form = formBody, extraHeaders = pageApiHeaders())
             println("[GTTV] getPages: status=${resp.code}")
