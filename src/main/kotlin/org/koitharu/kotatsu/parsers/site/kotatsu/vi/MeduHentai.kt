@@ -1,13 +1,11 @@
 package org.koitharu.kotatsu.parsers.site.vi
 
 import androidx.collection.ArrayMap
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.SerialName
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import okhttp3.Headers.Companion.toHeaders
+import org.json.JSONArray
+import org.json.JSONObject
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
 import org.koitharu.kotatsu.parsers.MangaParserAuthProvider
 import org.koitharu.kotatsu.parsers.MangaSourceParser
@@ -19,102 +17,23 @@ import org.koitharu.kotatsu.parsers.util.*
 import java.text.ParseException
 import java.text.SimpleDateFormat
 import java.util.*
-import okhttp3.Headers.Companion.toHeaders
 
 @MangaSourceParser("MEDUHENTAI", "MeduHentai", "vi", type = ContentType.HENTAI)
 internal class MeduHentaiParser(context: MangaLoaderContext) :
     AbstractMangaParser(context, MangaParserSource.MEDUHENTAI), MangaParserAuthProvider {
 
     companion object {
-        // SỬA MỚI: Xóa PLACEHOLDER_IMAGE_URL
         private const val MANGA_PER_PAGE = 24
     }
 
-    // --- DATA CLASSES ---
-
-    @Serializable
-    private data class ApiResponse(
-        val mangas: List<MangaListItem> = emptyList(),
-        val pagination: Pagination? = null,
-        @SerialName("manga") val manga: MangaDetails? = null
-    )
-
-    @Serializable
-    private data class MangaListItem(
-        @SerialName("_id") val id: String,
-        val title: String,
-        val description: String? = null,
-        val coverImage: String?,
-        val author: String? = null,
-        val genres: List<String> = emptyList(),
-        val updatedAt: String? = null,
-        val latestChapterUpdate: String? = null,
-        val likes: Int? = null
-    )
-
-    @Serializable
-    private data class MangaDetails(
-        @SerialName("_id") val id: String,
-        val title: String,
-        val alternativeTitles: List<String> = emptyList(),
-        val coverImage: String?,
-        val description: String? = null,
-        val author: String? = null,
-        val artist: String? = null,
-        val genres: List<String> = emptyList(),
-        val chapters: List<ChapterItem> = emptyList(),
-        val userId: Uploader? = null,
-        val status: String? = null
-    )
-    
-    @Serializable
-    private data class ChapterItem(
-        @SerialName("_id") val id: String,
-        val title: String,
-        val chapterNumber: Int,
-        val createdAt: String? = null,
-        val pages: List<PageItem> = emptyList()
-    )
-
-    @Serializable
-    private data class Uploader(
-        @SerialName("_id") val id: String, 
-        val username: String
-    )
-
-    @Serializable
-    private data class PageItem(
-        val pageNumber: Int,
-        val imageUrl: String
-    )
-
-    @Serializable
-    private data class Pagination(
-        val currentPage: Int,
-        val totalPages: Int,
-        val totalItems: Int,
-        val hasNextPage: Boolean
-    )
-    
-    @Serializable
-    private data class AuthSession(val user: User? = null)
-    
-    @Serializable
-    private data class User(
-        val id: String,
-        val username: String,
-        val email: String? = null
-    )
-
     override val configKeyDomain: ConfigKey.Domain = ConfigKey.Domain("meduhentai.com")
-    private val json = Json { ignoreUnknownKeys = true }
 
     // --- MangaParserAuthProvider ---
     override val authUrl: String
         get() = domain
 
     override suspend fun isAuthorized(): Boolean =
-        context.cookieJar.getCookies(domain).any { 
+        context.cookieJar.getCookies(domain).any {
             it.name.startsWith("__Secure-authjs") || it.name.startsWith("__Host-authjs")
         }
 
@@ -123,10 +42,10 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
             val response = webClient.httpGet("/api/auth/session".toAbsoluteUrl(domain))
             if (response.isSuccessful) {
                 val sessionJson = response.body!!.string()
-                val session = json.decodeFromString<AuthSession>(sessionJson)
-                return session.user?.username
-                    ?: session.user?.email
+                val obj = JSONObject(sessionJson)
+                val user = obj.optJSONObject("user")
                     ?: throw IllegalStateException("User not found in session")
+                return user.optString("username").ifBlank { user.optString("email") }
             } else {
                 throw IllegalStateException("Failed to get user info: ${response.code}")
             }
@@ -135,7 +54,7 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
         }
     }
 
-    // --- CÁC HÀM PARSER CƠ BẢN ---
+    // --- BASIC PARSER FUNCTIONS ---
     override suspend fun getFavicons(): Favicons = Favicons(
         listOf(Favicon("https://meduhentai.com/medusa.ico", 32, null)),
         domain
@@ -165,9 +84,9 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
     }
 
     override suspend fun getList(offset: Int, order: SortOrder, filter: MangaListFilter): List<Manga> {
-		val q = filter.query
+        val q = filter.query
         val page = (offset / MANGA_PER_PAGE.toFloat()).toIntUp() + 1
-        
+
         val apiUrl = buildString {
             append("/api/manga?")
             when {
@@ -191,52 +110,60 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
         }.toAbsoluteUrl(domain)
 
         val responseJson = webClient.httpGet(apiUrl).body!!.string()
-        val apiResponse = json.decodeFromString<ApiResponse>(responseJson)
+        val obj = JSONObject(responseJson)
+        val mangas = obj.optJSONArray("mangas") ?: return emptyList()
         val tagMap = getOrCreateTagMap()
-        
-        return apiResponse.mangas.map { item ->
-            // SỬA MỚI: Gán 'null' nếu rỗng
-            val finalCoverUrl = item.coverImage?.takeIf { it.isNotBlank() }
-            
+
+        return (0 until mangas.length()).map { i ->
+            val item = mangas.getJSONObject(i)
+            val finalCoverUrl = item.optString("coverImage", null)?.takeIf { it.isNotBlank() }
+
             Manga(
-                id = generateUid(item.id),
-                title = item.title,
-                url = "/manga/${item.id}",
-                publicUrl = "/manga/${item.id}".toAbsoluteUrl(domain),
-                coverUrl = finalCoverUrl, // Sẽ là null nếu rỗng
-                authors = setOfNotNull(item.author),
-                tags = item.genres.mapNotNullToSet { genreKey -> 
-                    tagMap[genreKey.lowercase()] ?: MangaTag(genreKey, genreKey, source)
-                },
+                id = generateUid(item.getString("_id")),
+                title = item.getString("title"),
+                url = "/manga/${item.getString("_id")}",
+                publicUrl = "/manga/${item.getString("_id")}".toAbsoluteUrl(domain),
+                coverUrl = finalCoverUrl,
+                authors = setOfNotNull(item.optString("author", null)),
+                tags = item.optJSONArray("genres")?.let { arr ->
+                    (0 until arr.length()).mapNotNullToSet { j ->
+                        val genreKey = arr.getString(j).lowercase()
+                        tagMap[genreKey] ?: MangaTag(genreKey, genreKey, source)
+                    }
+                } ?: emptySet(),
                 source = source,
                 contentRating = ContentRating.ADULT,
                 altTitles = emptySet(),
-                rating = item.likes?.toFloat() ?: RATING_UNKNOWN,
+                rating = item.optInt("likes", 0).toFloat().takeIf { it > 0f } ?: RATING_UNKNOWN,
                 state = null
             )
         }
     }
-    
-    override suspend fun getDetails(manga: Manga): Manga = coroutineScope {
+
+    override suspend fun getDetails(manga: Manga): Manga {
         val mangaId = manga.url.substringAfterLast('/')
         val detailsApiUrl = "/api/manga/$mangaId".toAbsoluteUrl(domain)
-        
+
         val headers = mapOf("Referer" to manga.publicUrl).toHeaders()
         val response = webClient.httpGet(detailsApiUrl, extraHeaders = headers)
         val responseJson = response.body!!.string()
-        
-        val details = json.decodeFromString<ApiResponse>(responseJson).manga
+
+        val obj = JSONObject(responseJson)
+        val details = obj.optJSONObject("manga")
             ?: throw IllegalStateException("Failed to parse manga details for ID: $mangaId")
 
-        val scanlatorName = details.userId?.username
-        
-        val chapters = details.chapters.map { chapterItem ->
+        val uploader = details.optJSONObject("userId")
+        val scanlatorName = uploader?.optString("username")
+
+        val chaptersArr = details.optJSONArray("chapters") ?: JSONArray()
+        val chapters = (0 until chaptersArr.length()).map { i ->
+            val chapterItem = chaptersArr.getJSONObject(i)
             MangaChapter(
-                id = generateUid(chapterItem.id),
-                title = chapterItem.title,
-                number = chapterItem.chapterNumber.toFloat(),
-                url = "$mangaId|${chapterItem.id}",
-                uploadDate = parseDate(chapterItem.createdAt) ?: 0L,
+                id = generateUid(chapterItem.getString("_id")),
+                title = chapterItem.getString("title"),
+                number = chapterItem.getInt("chapterNumber").toFloat(),
+                url = "$mangaId|${chapterItem.getString("_id")}",
+                uploadDate = parseDate(chapterItem.optString("createdAt")) ?: 0L,
                 source = source,
                 scanlator = scanlatorName,
                 volume = 0,
@@ -244,63 +171,77 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
             )
         }.sortedByDescending { it.number }
 
-        // SỬA MỚI: Gán 'null' nếu rỗng
-        val finalCoverUrl = details.coverImage?.takeIf { it.isNotBlank() }
-        val authorsSet = setOfNotNull(details.author, details.artist)
+        val finalCoverUrl = details.optString("coverImage", null)?.takeIf { it.isNotBlank() }
+        val author = details.optString("author", null)
+        val artist = details.optString("artist", null)
+        val authorsSet = setOfNotNull(author, artist)
         val tagMap = getOrCreateTagMap()
 
-        manga.copy(
-            coverUrl = finalCoverUrl, // Sẽ là null nếu rỗng
-            altTitles = details.alternativeTitles.toSet(),
+        val genresArr = details.optJSONArray("genres") ?: JSONArray()
+        val tags = (0 until genresArr.length()).mapNotNullToSet { j ->
+            val genreKey = genresArr.getString(j).lowercase()
+            tagMap[genreKey] ?: MangaTag(genreKey, genreKey, source)
+        }
+
+        val altTitles = details.optJSONArray("alternativeTitles")?.let { arr ->
+            (0 until arr.length()).mapTo(mutableSetOf()) { arr.getString(it) }
+        } ?: emptySet()
+
+        return manga.copy(
+            coverUrl = finalCoverUrl,
+            altTitles = altTitles,
             authors = authorsSet,
-            description = details.description ?: "",
-            tags = details.genres.mapNotNullToSet { genreKey -> 
-                tagMap[genreKey.lowercase()] ?: MangaTag(genreKey, genreKey, source)
-            },
+            description = details.optString("description", ""),
+            tags = tags,
             chapters = chapters,
-            state = parseMangaState(details.status)
+            state = parseMangaState(details.optString("status", null))
         )
     }
-    
+
     override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
         val (mangaId, chapterId) = chapter.url.split('|').takeIf { it.size == 2 }
             ?: throw IllegalArgumentException("Invalid chapter URL format. Expected 'mangaId|chapterId'")
 
         val detailsApiUrl = "/api/manga/$mangaId".toAbsoluteUrl(domain)
-        
+
         val readUrl = "/manga/$mangaId/read/$chapterId".toAbsoluteUrl(domain)
         val headers = mapOf("Referer" to readUrl).toHeaders()
         val response = webClient.httpGet(detailsApiUrl, extraHeaders = headers)
         val responseJson = response.body!!.string()
-        
-        val details = json.decodeFromString<ApiResponse>(responseJson).manga
+
+        val obj = JSONObject(responseJson)
+        val details = obj.optJSONObject("manga")
             ?: throw IllegalStateException("Failed to parse manga details (for pages)")
 
-        val chapterData = details.chapters.find { it.id == chapterId }
-            ?: throw IllegalStateException("Chapter $chapterId not found in API response")
-
-        if (chapterData.pages.isEmpty()) {
-            // SỬA MỚI: Trả về list rỗng thay vì throw lỗi, vì API có thể trả về pages rỗng
-            // (Mặc dù logic anti-bot trước đó cho thấy nó nên có)
-             return emptyList()
-        }
-        
-        // SỬA MỚI: Dùng mapNotNull để lọc ra các trang có URL rỗng
-        return chapterData.pages
-            .sortedBy { it.pageNumber }
-            .mapNotNull { pageItem ->
-                val finalUrl = pageItem.imageUrl.takeIf { it.isNotBlank() }
-                if (finalUrl == null) {
-                    null // Bỏ qua trang này
-                } else {
-                    MangaPage(
-                        id = generateUid(finalUrl), 
-                        url = finalUrl,
-                        source = source, 
-                        preview = null
-                    )
-                }
+        val chaptersArr = details.optJSONArray("chapters") ?: JSONArray()
+        var chapterData: JSONObject? = null
+        for (i in 0 until chaptersArr.length()) {
+            val ch = chaptersArr.getJSONObject(i)
+            if (ch.getString("_id") == chapterId) {
+                chapterData = ch
+                break
             }
+        }
+        if (chapterData == null) {
+            throw IllegalStateException("Chapter $chapterId not found in API response")
+        }
+
+        val pagesArr = chapterData.optJSONArray("pages") ?: JSONArray()
+        if (pagesArr.length() == 0) {
+            return emptyList()
+        }
+
+        return (0 until pagesArr.length()).mapNotNull { i ->
+            val pageObj = pagesArr.getJSONObject(i)
+            val imageUrl = pageObj.getString("imageUrl").takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            MangaPage(
+                id = generateUid(imageUrl),
+                url = imageUrl,
+                source = source,
+                preview = null
+            )
+        }
     }
 
     private var tagCache: ArrayMap<String, MangaTag>? = null
@@ -324,7 +265,7 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
             MangaTag(title = "Siêu nhiên", key = "supernatural", source = source),
             MangaTag(title = "Giật gân", key = "thriller", source = source)
         )
-        
+
         val tagMap = ArrayMap<String, MangaTag>()
         for (tag in staticGenres) {
             tagMap[tag.key] = tag
@@ -337,7 +278,7 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
     private fun parseDate(dateStr: String?): Long? {
         if (dateStr == null) return null
         val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
-        
+
         return try {
             sdf.parse(dateStr)?.time
         } catch (e: ParseException) {
@@ -347,7 +288,7 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
             } catch (e2: ParseException) { null }
         }
     }
-    
+
     private fun parseMangaState(status: String?): MangaState? {
         return when (status?.lowercase()) {
             "completed" -> MangaState.FINISHED
