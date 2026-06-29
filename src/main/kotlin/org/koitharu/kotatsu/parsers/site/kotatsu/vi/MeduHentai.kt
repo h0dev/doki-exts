@@ -125,12 +125,13 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
                 publicUrl = "/manga/${item.getString("_id")}".toAbsoluteUrl(domain),
                 coverUrl = finalCoverUrl,
                 authors = setOfNotNull(item.optString("author", null)),
-                tags = item.optJSONArray("genres")?.let { arr ->
-                    (0 until arr.length()).mapNotNullToSet { j ->
+                tags = buildSet {
+                    val arr = item.optJSONArray("genres") ?: return@buildSet
+                    for (j in 0 until arr.length()) {
                         val genreKey = arr.getString(j).lowercase()
-                        tagMap[genreKey] ?: MangaTag(genreKey, genreKey, source)
+                        add(tagMap[genreKey] ?: MangaTag(genreKey, genreKey, source))
                     }
-                } ?: emptySet(),
+                },
                 source = source,
                 contentRating = ContentRating.ADULT,
                 altTitles = emptySet(),
@@ -178,9 +179,11 @@ internal class MeduHentaiParser(context: MangaLoaderContext) :
         val tagMap = getOrCreateTagMap()
 
         val genresArr = details.optJSONArray("genres") ?: JSONArray()
-        val tags = (0 until genresArr.length()).mapNotNullToSet { j ->
-            val genreKey = genresArr.getString(j).lowercase()
-            tagMap[genreKey] ?: MangaTag(genreKey, genreKey, source)
+        val tags = buildSet {
+            for (j in 0 until genresArr.length()) {
+                val genreKey = genresArr.getString(j).lowercase()
+                add(tagMap[genreKey] ?: MangaTag(genreKey, genreKey, source))
+            }
         }
 
         val altTitles = details.optJSONArray("alternativeTitles")?.let { arr ->
