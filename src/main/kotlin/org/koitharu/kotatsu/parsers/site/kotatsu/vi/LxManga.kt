@@ -1,7 +1,7 @@
 package org.koitharu.kotatsu.parsers.site.vi
 
-import okhttp3.Request
 import okhttp3.Headers
+import okhttp3.Request
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -13,12 +13,12 @@ import org.koitharu.kotatsu.parsers.util.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-@MangaSourceParser("LXMANGA", "LXManga", "vi", type = ContentType.HENTAI)
+@MangaSourceParser("LXMANGA", "LxManga", "vi", type = ContentType.HENTAI)
 internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.LXMANGA, 24) {
 
 	override val configKeyDomain = ConfigKey.Domain("lxmanga.space")
 
-	override fun getRequestHeaders(): Headers = Headers.Builder()
+	override fun getRequestHeaders() = Headers.Builder()
 		.add("Referer", "https://$domain/")
 		.add("Origin", "https://$domain")
 		.build()
@@ -94,7 +94,8 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	private fun parseMangaList(doc: Document): List<Manga> {
 		return doc.select("div.manga-vertical").mapNotNull { element ->
-			val titleElement = element.selectFirst("a.text-ellipsis[href^=/truyen/]") ?: return@mapNotNull null
+			val titleElement = element.selectFirst("a.text-ellipsis[href^=/truyen/]")
+				?: return@mapNotNull null
 			val coverElement = element.selectFirst("div.cover")
 			val href = titleElement.absUrl("href").toRelativeUrl(domain)
 			val coverUrl = coverElement?.let { getThumbnailUrl(it) }
@@ -160,45 +161,38 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			?.select("a[href*=/the-loai/]")
 			?.mapToSet { a ->
 				MangaTag(
-					key = a.attr("href").removeSuffix('/').substringAfterLast('/'),
+					key = a.attr("href").removeSuffix("/").substringAfterLast("/"),
 					title = a.text(),
 					source = source,
 				)
 			} ?: emptySet()
 
-		val description = buildString {
-			if (altNames != null) {
-				append("Tên khác: ", altNames, "\n\n")
-			}
-			append(root.select("p:contains(Tóm tắt) ~ p").joinToString("\n") { it.wholeText() }.trim())
-		}.trim().ifEmpty { null }
+		val state = root.infoRow("Tình trạng:")
+			?.select("span.font-semibold")
+			?.text()
+			?.let { parseStatus(it) }
 
-		val state = parseStatus(root.infoRow("Tình trạng:")?.text())
+		val description = root.selectFirst("div#nav-content-tab-1 p, div.description")
+			?.text()
+			?.takeIf { it.isNotBlank() }
 
-		val scanlator = root.infoRow("Thực hiện:")
-			?.select("a")
-			?.joinToString { it.text() }
-			?.ifEmpty { null }
-
-		val chapters = root.select("ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)")
-			.ifEmpty { root.select("a[href^=/truyen/]:has(span.timeago)") }
-			.mapChapters(reversed = true) { _, a ->
-				val href = a.attrAsRelativeUrl("href")
-				val name = a.selectFirst("span.text-ellipsis")?.text() ?: "Chapter"
-				val dateText = a.selectFirst("span.timeago")?.attr("datetime").orEmpty()
-
-				MangaChapter(
-					id = generateUid(href),
-					title = name,
-					number = -1f,
-					volume = 0,
-					url = href,
-					scanlator = scanlator,
-					uploadDate = parseChapterDate(dateText),
-					branch = null,
-					source = source,
-				)
-			}
+		val chapters = root.select("div#list-chapter div.chapter-item, div#list-chapter-official div.chapter-item").mapNotNull { chapterEl ->
+			val link = chapterEl.selectFirst("a") ?: return@mapNotNull null
+			val href = link.attr("href").toRelativeUrl(domain)
+			val name = link.text()
+			val dateStr = chapterEl.selectFirst("span, span.text-xs")?.text().orEmpty()
+			MangaChapter(
+				id = generateUid(href),
+				title = name,
+				number = name.substringAfter(" ").toFloatOrNull() ?: -1f,
+				volume = 0,
+				url = href,
+				scanlator = null,
+				uploadDate = parseChapterDate(dateStr),
+				branch = null,
+				source = source,
+			)
+		}
 
 		return manga.copy(
 			title = title,
@@ -213,7 +207,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	private fun Document.infoRow(label: String): Element? {
 		return select("div").firstOrNull { row ->
-			row.selectFirst("> span.font-semibold")?.text() == label
+			row.selectFirst("span.font-semibold")?.text() == label
 		}
 	}
 
@@ -254,39 +248,48 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
 
 		if (actionToken != null && encryptedPayload != null) {
-			val encryptedRows = ENCRYPTED_IMAGE_ROW_REGEX.findAll(encryptedPayload)
-				.mapNotNull { row ->
-					row.groupValues.getOrNull(1)
-						?.split(',')
-						?.mapNotNull { it.toIntOrNull() }
-						?.takeIf { it.isNotEmpty() }
-				}
-				.toList()
+			val encryptedRows = ENCRYPTED_IMAGES_REGEX.find(html)
+				?.groupValues?.get(1)
+				?.let { payload ->
+					ENCRYPTED_IMAGE_ROW_REGEX.findAll(payload)
+						.map { match ->
+							match.groupValues[1]
+								.split(",")
+								.mapNotNull { it.toIntOrNull() }
+								.takeIf { it.isNotEmpty() }
+						}
+						.toList()
+				} ?: emptyList()
 
 			val imageUrls = doc.select("#image-container[data-idx]")
 				.mapNotNull { it.attr("data-idx").toIntOrNull() }
 				.distinct()
 				.sorted()
-				.mapNotNull { idx -> encryptedRows.getOrNull(idx) }
-				.map { codes -> decodeImageUrl(codes, actionToken) }
-				.filter { it.isNotBlank() }
-
-			if (imageUrls.isNotEmpty()) {
-				return imageUrls.map { url ->
-					MangaPage(
-						id = generateUid(url),
-						url = encodePageMetadata(fullUrl, actionToken, url),
-						preview = null,
-						source = source,
-					)
+				.mapNotNull { idx ->
+					encryptedRows.getOrNull(idx)
+						?.let { codes -> decodeImageUrl(codes, actionToken) }
+						?.takeIf { it.isNotBlank() }
+				}.ifEmpty {
+					throw Exception("Không tìm thấy dữ liệu ảnh")
 				}
+
+			// Store actionToken for companion image request headers
+			lastActionToken = actionToken
+			return imageUrls.map { url ->
+				val fullImageUrl = "https://$domain$url"
+				MangaPage(
+					id = generateUid(fullImageUrl),
+					url = encodePageMetadata(fullUrl, actionToken, fullImageUrl),
+					preview = null,
+					source = source,
+				)
 			}
 		}
 
 		// Fallback: try simple img tags (older layout)
-		return doc.select("div.text-center img, div.text-center div.lazy").mapNotNull { el ->
-			val url = el.attr("data-src").ifBlank { null }
-				?: el.attr("src").ifBlank { null }
+		return doc.select("div.text-center img, div.text-center div.lazy").mapNotNull {
+			val url = it.attr("data-src").ifBlank { null }
+				?: it.attr("src").ifBlank { null }
 				?: return@mapNotNull null
 			if (url.isNotBlank()) {
 				MangaPage(
@@ -296,8 +299,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 					source = source,
 				)
 			} else null
-		}.ifEmpty {
-			throw Exception("Không tìm thấy dữ liệu ảnh")
 		}
 	}
 
@@ -309,17 +310,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		}
 		return result.toString()
 	}
-override fun imageRequest(page: Page): Request {
-		val (chapterUrl, actionToken, imageUrl) = decodePageMetadata(page.url)
-		val url = imageUrl.ifBlank { page.url }
-		val headers = getRequestHeaders().newBuilder()
-			.add("Referer", chapterUrl)
-		if (!actionToken.isNullOrBlank()) {
-			headers.add("Token", actionToken)
-		}
-		return GET(url, headers.build())
-	}
-
 
 	// ======================== Tags ========================
 
@@ -328,7 +318,7 @@ override fun imageRequest(page: Page): Request {
 
 		return doc.select("nav.grid button").mapNotNull { button ->
 			val key = button.attr("wire:click")
-				.substringAfterLast(", '")
+				.substringAfterLast("', '")
 				.substringBeforeLast("')")
 			val title = button.select("span.text-ellipsis").text()
 			if (key.isNotEmpty() && title.isNotEmpty()) {
@@ -343,7 +333,10 @@ override fun imageRequest(page: Page): Request {
 		private val ENCRYPTED_IMAGES_REGEX = Regex("""var\s+_u\s*=\s*(\[\[.*?]]);""", RegexOption.DOT_MATCHES_ALL)
 		private val ENCRYPTED_IMAGE_ROW_REGEX = Regex("""\[(\d+(?:,\d+)*)]""")
 
-	}
+		@Volatile
+		var lastActionToken: String? = null
+			private set
+
 		// Page metadata encoding/decoding for image auth
 		private const val PAGE_METADATA_SEPARATOR = "\u00A7\u00A7"
 
@@ -354,10 +347,10 @@ override fun imageRequest(page: Page): Request {
 		private fun decodePageMetadata(url: String): Triple<String, String?, String> {
 			val parts = url.split(PAGE_METADATA_SEPARATOR, limit = 3)
 			return when {
-				parts.size >= 3 -> Triple(parts[0], parts[1].ifBlank { null }, parts[2])
+				parts.size == 3 -> Triple(parts[0], parts[1].ifBlank { null }, parts[2])
 				parts.size == 2 -> Triple(parts[0], parts[1].ifBlank { null }, "")
 				else -> Triple(url, null, "")
 			}
 		}
-
+	}
 }
