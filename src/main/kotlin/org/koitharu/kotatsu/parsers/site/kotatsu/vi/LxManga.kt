@@ -142,15 +142,20 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	// ======================== Details ========================
 
 	override suspend fun getDetails(manga: Manga): Manga {
-		val root = webClient.httpGet(manga.url.toAbsoluteUrl(domain)).parseHtml()
+		val fullUrl = manga.url.toAbsoluteUrl(domain)
+		System.err.println("[LxManga] getDetails: url=$fullUrl")
+		val root = webClient.httpGet(fullUrl).parseHtml()
+		System.err.println("[LxManga] getDetails: title=${root.title()}")
 
 		val title = root.selectFirst("div.flex.flex-row.truncate.mb-4 span.grow.text-lg.ml-1.text-ellipsis.font-semibold")
-			?.text() ?: manga.title
+			?.text().also { System.err.println("[LxManga] getDetails: titleSelector=$it") }
+			?: manga.title
 
 		val author = root.infoRow("Tác giả:")
 			?.select("a[href*=/tac-gia/]")
 			?.joinToString { it.text() }
 			?.ifEmpty { null }
+			.also { System.err.println("[LxManga] getDetails: author=$it") }
 
 		val altNames = root.infoRow("Tên khác:")
 			?.select("a, span:not(.font-semibold)")
@@ -171,16 +176,41 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			?.select("span.font-semibold")
 			?.text()
 			?.let { parseStatus(it) }
+			.also { System.err.println("[LxManga] getDetails: state=$it") }
 
 		val description = root.selectFirst("div#nav-content-tab-1 p, div.description")
 			?.text()
 			?.takeIf { it.isNotBlank() }
 
-		val chapters = root.select("div#list-chapter div.chapter-item, div#list-chapter-official div.chapter-item").mapNotNull { chapterEl ->
+		// Debug chapter parsing
+		val listChapterDiv = root.selectFirst("div#list-chapter")
+		val listChapterOfficial = root.selectFirst("div#list-chapter-official")
+		System.err.println("[LxManga] getDetails: div#list-chapter found=${listChapterDiv != null}")
+		System.err.println("[LxManga] getDetails: div#list-chapter-official found=${listChapterOfficial != null}")
+
+		val chapterItems = root.select("div#list-chapter div.chapter-item, div#list-chapter-official div.chapter-item")
+		System.err.println("[LxManga] getDetails: chapterItems count=${chapterItems.size}")
+
+		if (chapterItems.isEmpty()) {
+			// Debug: dump all div IDs and classes
+			val allDivIds = root.select("div[id]").map { it.attr("id") }.distinct().take(20)
+			System.err.println("[LxManga] getDetails: div ids found: $allDivIds")
+			val allDivClasses = root.select("div[class]").map { it.attr("class") }.distinct().take(20)
+			System.err.println("[LxManga] getDetails: div classes found: $allDivClasses")
+			// Also try broader selectors
+			val anyChapterLinks = root.select("a[href*=chapter], a[href*=chuong], a[href*=chap]")
+			System.err.println("[LxManga] getDetails: broader chapter links found: ${anyChapterLinks.size}")
+			anyChapterLinks.take(5).forEach { link ->
+				System.err.println("[LxManga] getDetails:   link: href=${link.attr("href")} text=${link.text()}")
+			}
+		}
+
+		val chapters = chapterItems.mapNotNull { chapterEl ->
 			val link = chapterEl.selectFirst("a") ?: return@mapNotNull null
 			val href = link.attr("href").toRelativeUrl(domain)
 			val name = link.text()
 			val dateStr = chapterEl.selectFirst("span, span.text-xs")?.text().orEmpty()
+			System.err.println("[LxManga] getDetails:   chapter: href=$href name=$name date=$dateStr")
 			MangaChapter(
 				id = generateUid(href),
 				title = name,
@@ -193,6 +223,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 				source = source,
 			)
 		}
+		System.err.println("[LxManga] getDetails: parsed chapters count=${chapters.size}")
 
 		return manga.copy(
 			title = title,
@@ -240,12 +271,15 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
+		System.err.println("[LxManga] getPages: url=$fullUrl")
 		val doc = webClient.httpGet(fullUrl).parseHtml()
 		val html = doc.outerHtml()
+		System.err.println("[LxManga] getPages: html length=${html.length}")
 
 		// Try encrypted image decoding: _u variable + action_token meta
 		val actionToken = ACTION_TOKEN_REGEX.find(html)?.groupValues?.get(1)
 		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
+		System.err.println("[LxManga] getPages: actionToken=${actionToken != null} encryptedPayload=${encryptedPayload != null}")
 
 		if (actionToken != null && encryptedPayload != null) {
 			val encryptedRows = ENCRYPTED_IMAGES_REGEX.find(html)
@@ -260,6 +294,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 						}
 						.toList()
 				} ?: emptyList()
+			System.err.println("[LxManga] getPages: encryptedRows count=${encryptedRows.size}")
 
 			val imageUrls = doc.select("#image-container[data-idx]")
 				.mapNotNull { it.attr("data-idx").toIntOrNull() }
@@ -270,8 +305,10 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 						?.let { codes -> decodeImageUrl(codes, actionToken) }
 						?.takeIf { it.isNotBlank() }
 				}.ifEmpty {
+					System.err.println("[LxManga] getPages: no imageUrls from encrypted path!")
 					throw Exception("Không tìm thấy dữ liệu ảnh")
 				}
+			System.err.println("[LxManga] getPages: imageUrls count=${imageUrls.size}")
 
 			// Store actionToken for companion image request headers
 			lastActionToken = actionToken
@@ -287,7 +324,8 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		}
 
 		// Fallback: try simple img tags (older layout)
-		return doc.select("div.text-center img, div.text-center div.lazy").mapNotNull {
+		System.err.println("[LxManga] getPages: fallback to img tags")
+		val imgPages = doc.select("div.text-center img, div.text-center div.lazy").mapNotNull {
 			val url = it.attr("data-src").ifBlank { null }
 				?: it.attr("src").ifBlank { null }
 				?: return@mapNotNull null
@@ -300,6 +338,22 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 				)
 			} else null
 		}
+		System.err.println("[LxManga] getPages: fallback imgPages count=${imgPages.size}")
+
+		if (imgPages.isEmpty()) {
+			// Debug: dump image-related elements
+			val allImgs = doc.select("img")
+			System.err.println("[LxManga] getPages: all img tags=${allImgs.size}")
+			allImgs.take(5).forEach { img ->
+				System.err.println("[LxManga] getPages:   img src=${img.attr("src")} data-src=${img.attr("data-src")}")
+			}
+			val allDataIdx = doc.select("[data-idx]")
+			System.err.println("[LxManga] getPages: all data-idx elements=${allDataIdx.size}")
+			val imageContainers = doc.select("#image-container")
+			System.err.println("[LxManga] getPages: #image-container count=${imageContainers.size}")
+		}
+
+		return imgPages
 	}
 
 	private fun decodeImageUrl(codes: List<Int>, actionToken: String): String {
