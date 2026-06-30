@@ -12,10 +12,10 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
-import java.text.SimpleDateFormat
-import java.util.*
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.*
 
 @MangaSourceParser("LXMANGA", "LxManga", "vi", type = ContentType.HENTAI)
 internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, MangaParserSource.LXMANGA, 24) {
@@ -149,7 +149,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		val fullUrl = manga.url.toAbsoluteUrl(domain)
 		System.err.println("[LxManga] getDetails: url=$fullUrl")
 		val doc = webClient.httpGet(fullUrl).parseHtml()
-		val bodyHtml = doc.body().html()
 		System.err.println("[LxManga] getDetails: title=${doc.title()}")
 
 		val title = doc.selectFirst("div.flex.flex-row.truncate.mb-4 span.grow.text-lg.ml-1.text-ellipsis.font-semibold")
@@ -185,66 +184,28 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			?.text()
 			?.takeIf { it.isNotBlank() }
 
-		// Debug: find Livewire components
-		val wireInitialData = WIRE_INITIAL_DATA_REGEX.findAll(bodyHtml).toList()
-		System.err.println("[LxManga] getDetails: wire:initial-data found=${wireInitialData.size}")
-		wireInitialData.forEachIndexed { idx, match ->
-			val snippet = match.groupValues[1].take(200)
-			System.err.println("[LxManga] getDetails:   wire[$idx]=$snippet")
+		// Chapter parsing - keiyoushi selector: ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)
+		val chapterElements = doc.select("ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)")
+			.ifEmpty { doc.select("a[href^=/truyen/]:has(span.timeago)") }
+		System.err.println("[LxManga] getDetails: chapterElements count=${chapterElements.size}")
+
+		val chapters = chapterElements.mapNotNull { element ->
+			val href = element.absUrl("href").toRelativeUrl(domain)
+			val name = element.selectFirst("span.text-ellipsis")?.text() ?: "Chapter"
+			val dateStr = element.selectFirst("span.timeago")?.text().orEmpty()
+			MangaChapter(
+				id = generateUid(href),
+				title = name,
+				number = name.substringAfter(" ").toFloatOrNull() ?: -1f,
+				volume = 0,
+				url = href,
+				scanlator = null,
+				uploadDate = parseChapterDate(dateStr),
+				branch = null,
+				source = source,
+			)
 		}
-
-		val livewireToken = LIVEWIRE_TOKEN_REGEX.find(bodyHtml)?.groupValues?.get(1)
-		System.err.println("[LxManga] getDetails: livewire_token=${livewireToken != null}")
-
-		// Try standard chapter selectors first
-		val chapters = tryStandardChapterSelectors(doc)
-
-		if (chapters.isEmpty() && livewireToken != null && wireInitialData.isNotEmpty()) {
-			// Try Livewire approach
-			System.err.println("[LxManga] getDetails: standard selectors failed, trying Livewire...")
-			val livewireChapters = tryLivewireChapters(doc, bodyHtml, livewireToken)
-			System.err.println("[LxManga] getDetails: livewire chapters count=${livewireChapters.size}")
-			if (livewireChapters.isNotEmpty()) {
-				return manga.copy(
-					title = title,
-					altTitles = setOfNotNull(altNames),
-					state = state,
-					tags = tags,
-					authors = setOfNotNull(author),
-					description = description,
-					chapters = livewireChapters,
-				)
-			}
-		}
-
-		// Debug: if no chapters, dump more context
-		if (chapters.isEmpty()) {
-			System.err.println("[LxManga] getDetails: NO chapters found! Dumping more context...")
-			// Search for any links that look like chapter links
-			val allLinks = doc.select("a[href]")
-			val chapterLikeLinks = allLinks.filter { a ->
-				val href = a.attr("href")
-				href.contains("chapter", ignoreCase = true) ||
-					href.contains("chuong", ignoreCase = true) ||
-					href.contains("chap", ignoreCase = true)
-			}
-			System.err.println("[LxManga] getDetails: chapter-like links=${chapterLikeLinks.size}")
-			chapterLikeLinks.take(5).forEach { a ->
-				System.err.println("[LxManga] getDetails:   ${a.attr("href")} -> ${a.text().take(50)}")
-			}
-
-			// Dump sections that might contain chapters
-			val sections = doc.select("section, div[wire\\:id], div[x-data]")
-			System.err.println("[LxManga] getDetails: sections/wire/x-data=${sections.size}")
-			sections.take(5).forEach { s ->
-				val tag = s.tagName()
-				val id = s.attr("id").ifBlank { s.attr("wire:id").ifBlank { s.attr("x-data") } }
-				val childCount = s.childrenSize()
-				System.err.println("[LxManga] getDetails:   $tag id=$id children=$childCount")
-			}
-		}
-
-		System.err.println("[LxManga] getDetails: final chapters count=${chapters.size}")
+		System.err.println("[LxManga] getDetails: parsed chapters count=${chapters.size}")
 
 		return manga.copy(
 			title = title,
@@ -255,143 +216,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			description = description,
 			chapters = chapters,
 		)
-	}
-
-	private fun tryStandardChapterSelectors(doc: Document): List<MangaChapter> {
-		// Try multiple selector strategies
-		val selectors = listOf(
-			"div#list-chapter div.chapter-item",
-			"div#list-chapter-official div.chapter-item",
-			"div.chapter-item",
-			"div.chapter-list div",
-			"div.list-chapter a",
-			"div[wire\\:id] a[href*=chapter]",
-			"div[wire\\:id] a[href*=chuong]",
-		)
-
-		for (selector in selectors) {
-			val items = doc.select(selector)
-			if (items.isNotEmpty()) {
-				System.err.println("[LxManga] tryStandard: selector='$selector' found=${items.size}")
-				return items.mapNotNull { chapterEl ->
-					val link = chapterEl.selectFirst("a") ?: chapterEl.takeIf { it.tagName() == "a" } ?: return@mapNotNull null
-					val href = link.attr("href").toRelativeUrl(domain)
-					val name = link.text()
-					val dateStr = chapterEl.selectFirst("span, span.text-xs, time")?.text().orEmpty()
-					MangaChapter(
-						id = generateUid(href),
-						title = name,
-						number = name.substringAfter(" ").toFloatOrNull() ?: -1f,
-						volume = 0,
-						url = href,
-						scanlator = null,
-						uploadDate = parseChapterDate(dateStr),
-						branch = null,
-						source = source,
-					)
-				}
-			}
-		}
-		System.err.println("[LxManga] tryStandard: all selectors returned 0")
-		return emptyList()
-	}
-
-	private fun tryLivewireChapters(doc: Document, bodyHtml: String, livewireToken: String): List<MangaChapter> {
-		// Find wire:initial-data components that might be chapter lists
-		val wireDataList = WIRE_INITIAL_DATA_REGEX.findAll(bodyHtml).map {
-			it.groupValues[1]
-		}.toList()
-
-		for (wireDataStr in wireDataList) {
-			try {
-				val wireData = org.json.JSONObject(wireDataStr)
-				val name = wireData.optString("name", "")
-				val id = wireData.optString("id", "")
-				val serverMemo = wireData.optJSONObject("serverMemo") ?: continue
-				val data = serverMemo.optJSONObject("data") ?: continue
-
-				System.err.println("[LxManga] tryLivewire: component=$name id=$id data_keys=${data.keys().asSequence().toList()}")
-
-				// Check if this component has chapter-related data
-				val dataStr = data.toString()
-				val hasChapters = dataStr.contains("chapter", ignoreCase = true) ||
-					dataStr.contains("chuong", ignoreCase = true) ||
-					name.contains("chapter", ignoreCase = true)
-				if (!hasChapters) continue
-
-				System.err.println("[LxManga] tryLivewire: found chapter component! name=$name")
-
-				// Build Livewire request
-				val checksum = wireData.optString("checksum", "")
-				val payload = org.json.JSONObject().apply {
-					put("fingerprint", org.json.JSONObject().apply {
-						put("id", id)
-						put("name", name)
-						put("locale", "vi")
-						put("path", doc.location())
-						put("method", "GET")
-						put("data", org.json.JSONObject()) // empty initial data
-					})
-					put("serverMemo", org.json.JSONObject().apply {
-						put("dataMeta", org.json.JSONObject())
-						put("htmlHash", serverMemo.optString("htmlHash", ""))
-						put("data", data)
-						put("checksum", checksum)
-					})
-					put("updates", org.json.JSONArray())
-				}
-
-				val requestBody = payload.toString()
-					.toRequestBody("application/json".toMediaTypeOrNull())
-
-				val request = Request.Builder()
-					.url("https://$domain/livewire/message/$name")
-					.post(requestBody)
-					.headers(getRequestHeaders())
-					.addHeader("X-Livewire", "true")
-					.addHeader("X-CSRF-TOKEN", livewireToken)
-					.addHeader("Accept", "text/html, application/xhtml+xml")
-					.addHeader("Content-Type", "application/json; charset=utf-8")
-					.build()
-
-				val response = context.httpClient.newCall(request).execute()
-				val responseBody = response.body?.string() ?: continue
-				System.err.println("[LxManga] tryLivewire: response length=${responseBody.length}")
-
-				// Parse Livewire JSON response
-				val responseJson = org.json.JSONObject(responseBody)
-				val responseHtml = responseJson.optString("effects.html", "")
-				System.err.println("[LxManga] tryLivewire: response HTML length=${responseHtml.length}")
-
-				if (responseHtml.isNotEmpty()) {
-					val responseDoc = org.jsoup.Jsoup.parseBodyFragment(responseHtml)
-					val links = responseDoc.select("a[href*=chapter], a[href*=chuong], a[href*=chap]")
-					System.err.println("[LxManga] tryLivewire: chapter links in response=${links.size}")
-
-					if (links.isNotEmpty()) {
-						return links.map { a ->
-							val href = a.attr("href").toRelativeUrl(domain)
-							val name2 = a.text()
-							MangaChapter(
-								id = generateUid(href),
-								title = name2,
-								number = name2.substringAfter(" ").toFloatOrNull() ?: -1f,
-								volume = 0,
-								url = href,
-								scanlator = null,
-								uploadDate = 0L,
-								branch = null,
-								source = source,
-							)
-						}
-					}
-				}
-			} catch (e: Exception) {
-				System.err.println("[LxManga] tryLivewire: error=${e.message}")
-			}
-		}
-
-		return emptyList()
 	}
 
 	private fun Document.infoRow(label: String): Element? {
@@ -420,8 +244,8 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	}
 
 	private val CHAPTER_DATE_FORMAT by lazy {
-		SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX", Locale.ROOT).apply {
-			timeZone = TimeZone.getTimeZone("Asia/Ho_Chi_Minh")
+		SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply {
+			timeZone = TimeZone.getTimeZone("UTC")
 		}
 	}
 
@@ -434,7 +258,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		val html = doc.outerHtml()
 		System.err.println("[LxManga] getPages: html length=${html.length}")
 
-		// Try encrypted image decoding: _u variable + action_token meta
 		val actionToken = ACTION_TOKEN_REGEX.find(html)?.groupValues?.get(1)
 		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
 		System.err.println("[LxManga] getPages: actionToken=${actionToken != null} encryptedPayload=${encryptedPayload != null}")
@@ -469,18 +292,16 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			System.err.println("[LxManga] getPages: imageUrls count=${imageUrls.size}")
 
 			lastActionToken = actionToken
-			return imageUrls.map { url ->
-				val fullImageUrl = "https://$domain$url"
+			return imageUrls.map { imageUrl ->
 				MangaPage(
-					id = generateUid(fullImageUrl),
-					url = encodePageMetadata(fullUrl, actionToken, fullImageUrl),
+					id = generateUid(imageUrl),
+					url = encodePageMetadata(fullUrl, actionToken, imageUrl),
 					preview = null,
 					source = source,
 				)
 			}
 		}
 
-		// Fallback: try simple img tags
 		System.err.println("[LxManga] getPages: fallback to img tags")
 		val imgPages = doc.select("div.text-center img, div.text-center div.lazy").mapNotNull {
 			val url = it.attr("data-src").ifBlank { null }
@@ -496,17 +317,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			} else null
 		}
 		System.err.println("[LxManga] getPages: fallback imgPages count=${imgPages.size}")
-
-		if (imgPages.isEmpty()) {
-			val allImgs = doc.select("img")
-			System.err.println("[LxManga] getPages: all img tags=${allImgs.size}")
-			allImgs.take(5).forEach { img ->
-				System.err.println("[LxManga] getPages:   img src=${img.attr("src")} data-src=${img.attr("data-src")}")
-			}
-			val allDataIdx = doc.select("[data-idx]")
-			System.err.println("[LxManga] getPages: all data-idx elements=${allDataIdx.size}")
-		}
-
 		return imgPages
 	}
 
@@ -540,8 +350,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		private val ACTION_TOKEN_REGEX = Regex("""<meta\s+name=["']action_token["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 		private val ENCRYPTED_IMAGES_REGEX = Regex("""var\s+_u\s*=\s*(\[\[.*?]]);""", RegexOption.DOT_MATCHES_ALL)
 		private val ENCRYPTED_IMAGE_ROW_REGEX = Regex("""\[(\d+(?:,\d+)*)]""")
-		private val WIRE_INITIAL_DATA_REGEX = Regex("""wire:initial-data="([^"]+)"""")
-		private val LIVEWIRE_TOKEN_REGEX = Regex("""livewire_token\s*=\s*['"]([^'"]+)['"]""")
 
 		@Volatile
 		var lastActionToken: String? = null
