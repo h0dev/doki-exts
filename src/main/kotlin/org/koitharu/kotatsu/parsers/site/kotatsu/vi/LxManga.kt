@@ -12,8 +12,6 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
-import org.json.JSONArray
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -184,15 +182,28 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			?.text()
 			?.takeIf { it.isNotBlank() }
 
-		// Chapter parsing - keiyoushi selector: ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)
+		// Chapter parsing — keiyoushi selector
 		val chapterElements = doc.select("ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)")
 			.ifEmpty { doc.select("a[href^=/truyen/]:has(span.timeago)") }
+			.ifEmpty {
+				// Broader fallback without timeago requirement
+				doc.select("ul.overflow-y-auto a[href^=/truyen/]")
+			}
+			.ifEmpty {
+				doc.select("a[href^=/truyen/]:has(span.text-ellipsis)")
+					.filter { el ->
+						val href = el.attr("href")
+						// Filter out the manga title link itself — only keep chapter links
+						href.count { it == '/' } > 2
+					}
+			}
 		System.err.println("[LxManga] getDetails: chapterElements count=${chapterElements.size}")
 
 		val chapters = chapterElements.mapNotNull { element ->
 			val href = element.absUrl("href").toRelativeUrl(domain)
 			val name = element.selectFirst("span.text-ellipsis")?.text() ?: "Chapter"
 			val dateStr = element.selectFirst("span.timeago")?.text().orEmpty()
+			System.err.println("[LxManga] getDetails:   chapter href=$href name=$name")
 			MangaChapter(
 				id = generateUid(href),
 				title = name,
@@ -252,12 +263,20 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	// ======================== Pages ========================
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+		System.err.println("[LxManga] getPages: ENTER chapter.id=${chapter.id} chapter.url=${chapter.url}")
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
-		System.err.println("[LxManga] getPages: url=$fullUrl")
-		val doc = webClient.httpGet(fullUrl).parseHtml()
+		System.err.println("[LxManga] getPages: fullUrl=$fullUrl")
+
+		val doc = try {
+			webClient.httpGet(fullUrl).parseHtml()
+		} catch (e: Exception) {
+			System.err.println("[LxManga] getPages: HTTP ERROR: ${e.message}")
+			throw e
+		}
 		val html = doc.outerHtml()
 		System.err.println("[LxManga] getPages: html length=${html.length}")
 
+		// Try encrypted image decoding: _u variable + action_token meta
 		val actionToken = ACTION_TOKEN_REGEX.find(html)?.groupValues?.get(1)
 		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
 		System.err.println("[LxManga] getPages: actionToken=${actionToken != null} encryptedPayload=${encryptedPayload != null}")
@@ -302,6 +321,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			}
 		}
 
+		// Fallback: try simple img tags
 		System.err.println("[LxManga] getPages: fallback to img tags")
 		val imgPages = doc.select("div.text-center img, div.text-center div.lazy").mapNotNull {
 			val url = it.attr("data-src").ifBlank { null }
@@ -317,6 +337,19 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			} else null
 		}
 		System.err.println("[LxManga] getPages: fallback imgPages count=${imgPages.size}")
+
+		if (imgPages.isEmpty()) {
+			val allImgs = doc.select("img")
+			System.err.println("[LxManga] getPages: all img tags=${allImgs.size}")
+			allImgs.take(5).forEach { img ->
+				System.err.println("[LxManga] getPages:   img src=${img.attr("src")} data-src=${img.attr("data-src")}")
+			}
+			val allDataIdx = doc.select("[data-idx]")
+			System.err.println("[LxManga] getPages: all data-idx elements=${allDataIdx.size}")
+			val imageContainers = doc.select("#image-container")
+			System.err.println("[LxManga] getPages: #image-container count=${imageContainers.size}")
+		}
+
 		return imgPages
 	}
 
