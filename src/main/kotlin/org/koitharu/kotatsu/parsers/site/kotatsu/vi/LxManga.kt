@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.vi
 
+import okhttp3.Request
 import okhttp3.Headers
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
@@ -271,12 +272,10 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 				.filter { it.isNotBlank() }
 
 			if (imageUrls.isNotEmpty()) {
-				// Store actionToken in companion for image request headers
-				lastActionToken = actionToken
-				return imageUrls.mapIndexed { index, url ->
+				return imageUrls.map { url ->
 					MangaPage(
 						id = generateUid(url),
-						url = url,
+						url = encodePageMetadata(fullUrl, actionToken, url),
 						preview = null,
 						source = source,
 					)
@@ -310,6 +309,17 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		}
 		return result.toString()
 	}
+override fun imageRequest(page: Page): Request {
+		val (chapterUrl, actionToken, imageUrl) = decodePageMetadata(page.url)
+		val url = imageUrl.ifBlank { page.url }
+		val headers = getRequestHeaders().newBuilder()
+			.add("Referer", chapterUrl)
+		if (!actionToken.isNullOrBlank()) {
+			headers.add("Token", actionToken)
+		}
+		return GET(url, headers.build())
+	}
+
 
 	// ======================== Tags ========================
 
@@ -333,8 +343,21 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		private val ENCRYPTED_IMAGES_REGEX = Regex("""var\s+_u\s*=\s*(\[\[.*?]]);""", RegexOption.DOT_MATCHES_ALL)
 		private val ENCRYPTED_IMAGE_ROW_REGEX = Regex("""\[(\d+(?:,\d+)*)]""")
 
-		@Volatile
-		var lastActionToken: String? = null
-			private set
 	}
+		// Page metadata encoding/decoding for image auth
+		private const val PAGE_METADATA_SEPARATOR = "\u00A7\u00A7"
+
+		private fun encodePageMetadata(chapterUrl: String, actionToken: String?, imageUrl: String): String {
+			return "$chapterUrl$PAGE_METADATA_SEPARATOR${actionToken.orEmpty()}$PAGE_METADATA_SEPARATOR$imageUrl"
+		}
+
+		private fun decodePageMetadata(url: String): Triple<String, String?, String> {
+			val parts = url.split(PAGE_METADATA_SEPARATOR, limit = 3)
+			return when {
+				parts.size >= 3 -> Triple(parts[0], parts[1].ifBlank { null }, parts[2])
+				parts.size == 2 -> Triple(parts[0], parts[1].ifBlank { null }, "")
+				else -> Triple(url, null, "")
+			}
+		}
+
 }
