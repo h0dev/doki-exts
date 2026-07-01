@@ -6,3 +6,4 @@ build/
 .kotlin/
 local.properties
 .hive/
+.hive2/
