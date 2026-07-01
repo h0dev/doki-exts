@@ -318,21 +318,41 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	 * Use the app's WebView to load the chapter page and wait for
 	 * the anti-scraping WASM/JS to decrypt and set image sources.
 	 * Returns list of image URLs, or empty list on failure.
+	 *
+	 * Uses a two-step approach:
+	 * 1. Load the page via evaluateJs(chapterUrl, "void(0)") to trigger page load + WASM decryption
+	 * 2. Poll via evaluateJs(POLL_SCRIPT) until images appear or timeout
 	 */
 	private suspend fun tryExtractImagesViaWebView(chapterUrl: String): List<String> {
 		return try {
-			val result = context.evaluateJs(chapterUrl, WEBVIEW_EXTRACT_SCRIPT)
-				?: return emptyList()
+			// Step 1: Load the chapter page in WebView — this triggers the anti-scraping WASM
+			context.evaluateJs(chapterUrl, "void(0)")
 
-			val imageUrls = mutableListOf<String>()
-			val jsonArray = JSONArray(result)
-			for (i in 0 until jsonArray.length()) {
-				val url = jsonArray.optString(i, "")
-				if (url.isNotBlank() && url.startsWith("http")) {
-					imageUrls.add(url)
+			// Step 2: Poll for decrypted images (WASM needs a few seconds)
+			val maxAttempts = 15 // 15 seconds max
+			for (attempt in 1..maxAttempts) {
+			 kotlinx.coroutines.delay(1000) // Wait 1 second between checks
+
+			val result = context.evaluateJs(SCRIPT_COLLECT_IMAGES) ?: continue
+
+				if (result.isNotBlank() && result != "[]") {
+					val imageUrls = mutableListOf<String>()
+					val jsonArray = JSONArray(result)
+					for (i in 0 until jsonArray.length()) {
+						val url = jsonArray.optString(i, "")
+						if (url.isNotBlank() && url.startsWith("http")) {
+							imageUrls.add(url)
+						}
+					}
+					if (imageUrls.isNotEmpty()) {
+						System.err.println("[LxManga] WebView: found ${imageUrls.size} images on attempt $attempt")
+						return imageUrls
+					}
 				}
+				System.err.println("[LxManga] WebView: attempt $attempt - no images yet")
 			}
-			imageUrls
+
+			emptyList()
 		} catch (e: Exception) {
 			System.err.println("[LxManga] WebView error: ${e.message}")
 			emptyList()
@@ -377,61 +397,40 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		private const val PAGE_METADATA_SEPARATOR = "\u00A7\u00A7"
 
 		/**
-		 * JavaScript to inject into WebView after the chapter page loads.
-		 * Waits for the anti-scraping WASM/JS to decrypt and set image sources,
-		 * then collects all image URLs from #image-container img elements.
+		 * Synchronous JavaScript to collect image URLs from the page.
+		 * Called repeatedly by tryExtractImagesViaWebView() after page load.
+		 * Returns JSON array of image URLs, or "[]" if none found.
 		 */
-		private const val WEBVIEW_EXTRACT_SCRIPT = """
+		private const val SCRIPT_COLLECT_IMAGES = """
 			(function() {
-				return new Promise(function(resolve) {
-					var maxWait = 15000;
-					var checkInterval = 500;
-					var elapsed = 0;
-
-					function tryExtract() {
-						var images = document.querySelectorAll('#image-container img');
-						var urls = [];
-						for (var i = 0; i < images.length; i++) {
-							var src = images[i].getAttribute('src') || images[i].src || '';
-							if (src && src.indexOf('http') === 0 && src.indexOf('favicon') === -1) {
-								urls.push(src);
-							}
-						}
-
-						if (urls.length > 0) {
-							resolve(JSON.stringify(urls));
-							return;
-						}
-
-						elapsed += checkInterval;
-						if (elapsed >= maxWait) {
-							// Final attempt: try data-src, background-image, etc.
-							var containers = document.querySelectorAll('#image-container');
-							for (var i = 0; i < containers.length; i++) {
-								var img = containers[i].querySelector('img');
-								if (img) {
-									var url = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
-									if (!url) {
-										var bg = window.getComputedStyle(containers[i]).backgroundImage;
-										if (bg && bg !== 'none') {
-											url = bg.replace(/^url\(["']?/, '').replace(/["']?\)$/, '');
-										}
-									}
-									if (url && url.indexOf('http') === 0) {
-										urls.push(url);
-									}
+				var urls = [];
+				var images = document.querySelectorAll('#image-container img');
+				for (var i = 0; i < images.length; i++) {
+					var src = images[i].getAttribute('src') || '';
+					if (src && src.indexOf('http') === 0 && src.indexOf('favicon') === -1) {
+						urls.push(src);
+					}
+				}
+				if (urls.length === 0) {
+					// Fallback: try data-src, background-image
+					var containers = document.querySelectorAll('#image-container');
+					for (var i = 0; i < containers.length; i++) {
+						var img = containers[i].querySelector('img');
+						if (img) {
+							var url = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
+							if (!url) {
+								var bg = window.getComputedStyle(containers[i]).backgroundImage;
+								if (bg && bg !== 'none') {
+									url = bg.replace(/^url\(["']?/, '').replace(/["']?\)$/, '');
 								}
 							}
-							resolve(JSON.stringify(urls));
-							return;
+							if (url && url.indexOf('http') === 0) {
+								urls.push(url);
+							}
 						}
-
-						setTimeout(tryExtract, checkInterval);
 					}
-
-					// Start checking after initial delay for JS/WASM to initialize
-					setTimeout(tryExtract, 2000);
-				});
+				}
+				return JSON.stringify(urls);
 			})()
 		"""
 
