@@ -12,6 +12,7 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
+import org.json.JSONArray
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -180,7 +181,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			?.text()
 			?.takeIf { it.isNotBlank() }
 
-		// Chapter parsing — keiyoushi selector
+		// Chapter parsing
 		val chapterElements = doc.select("ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)")
 			.ifEmpty { doc.select("a[href^=/truyen/]:has(span.timeago)") }
 			.ifEmpty {
@@ -253,50 +254,29 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	// ======================== Pages ========================
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		System.err.println("[LxManga] getPages: ENTER chapter.url=${chapter.url}")
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
-		System.err.println("[LxManga] getPages: fullUrl=$fullUrl")
 
-		val doc = try {
-			webClient.httpGet(fullUrl).parseHtml()
-		} catch (e: Exception) {
-			System.err.println("[LxManga] getPages: HTTP ERROR: ${e.message}")
-			throw e
+		// Method 1: Try WebView-based image extraction (handles anti-scraping WASM)
+		val webImageUrls = tryExtractImagesViaWebView(fullUrl)
+		if (webImageUrls.isNotEmpty()) {
+			System.err.println("[LxManga] getPages: WebView returned ${webImageUrls.size} images")
+			return webImageUrls.map { imageUrl ->
+				MangaPage(
+					id = generateUid(imageUrl),
+					url = imageUrl,
+					preview = null,
+					source = source,
+				)
+			}
 		}
+
+		// Method 2: Fallback to static HTML parsing (old XOR method)
+		System.err.println("[LxManga] getPages: WebView returned empty, trying static HTML")
+		val doc = webClient.httpGet(fullUrl).parseHtml()
 		val html = doc.outerHtml()
-		System.err.println("[LxManga] getPages: html length=${html.length}")
 
 		val actionToken = ACTION_TOKEN_REGEX.find(html)?.groupValues?.get(1)
-		System.err.println("[LxManga] getPages: actionToken=${actionToken != null} value=${actionToken?.take(20)}")
-
-		// Debug: search for ALL var declarations that look like encrypted arrays
-		val varDeclarations = VAR_ARRAY_REGEX.findAll(html).toList()
-		System.err.println("[LxManga] getPages: var array declarations found=${varDeclarations.size}")
-		varDeclarations.forEachIndexed { idx, match ->
-			val varName = match.groupValues[1]
-			val varValue = match.groupValues[2].take(100)
-			System.err.println("[LxManga] getPages:   var[$idx] name=$varName value=$varValue")
-		}
-
-		// Also search for any large array of integers (encrypted image data)
-		val largeArrays = LARGE_INT_ARRAY_REGEX.findAll(html).toList()
-		System.err.println("[LxManga] getPages: large int arrays found=${largeArrays.size}")
-		largeArrays.forEachIndexed { idx, match ->
-			val snippet = match.groupValues[0].take(150)
-			System.err.println("[LxManga] getPages:   array[$idx] snippet=$snippet")
-		}
-
-		// Also check for Alpine.js x-data with image data
-		val xDataElements = doc.select("[x-data]")
-		System.err.println("[LxManga] getPages: x-data elements=${xDataElements.size}")
-		xDataElements.forEachIndexed { idx, el ->
-			val xDataVal = el.attr("x-data").take(200)
-			System.err.println("[LxManga] getPages:   x-data[$idx]=$xDataVal")
-		}
-
-		// Try the standard encrypted path first
 		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
-		System.err.println("[LxManga] getPages: encryptedPayload(old _u)=${encryptedPayload != null}")
 
 		if (actionToken != null && encryptedPayload != null) {
 			val encryptedRows = ENCRYPTED_IMAGE_ROW_REGEX.findAll(encryptedPayload)
@@ -307,7 +287,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 						.takeIf { it.isNotEmpty() }
 				}
 				.toList()
-			System.err.println("[LxManga] getPages: encryptedRows count=${encryptedRows.size}")
 
 			val imageUrls = doc.select("#image-container[data-idx]")
 				.mapNotNull { it.attr("data-idx").toIntOrNull() }
@@ -317,56 +296,47 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 					encryptedRows.getOrNull(idx)
 						?.let { codes -> decodeImageUrl(codes, actionToken) }
 						?.takeIf { it.isNotBlank() }
-				}.ifEmpty {
-					throw Exception("Không tìm thấy dữ liệu ảnh")
 				}
-			System.err.println("[LxManga] getPages: imageUrls count=${imageUrls.size}")
 
-			lastActionToken = actionToken
-			return imageUrls.map { imageUrl ->
-				MangaPage(
-					id = generateUid(imageUrl),
-					url = encodePageMetadata(fullUrl, actionToken, imageUrl),
-					preview = null,
-					source = source,
-				)
+			if (imageUrls.isNotEmpty()) {
+				lastActionToken = actionToken
+				return imageUrls.map { imageUrl ->
+					MangaPage(
+						id = generateUid(imageUrl),
+						url = encodePageMetadata(fullUrl, actionToken, imageUrl),
+						preview = null,
+						source = source,
+					)
+				}
 			}
 		}
 
-		// Try alternative: find image URLs from data-idx containers directly
-		System.err.println("[LxManga] getPages: trying direct data-idx parse")
-		val imageContainers = doc.select("#image-container[data-idx]")
-		System.err.println("[LxManga] getPages: image-container count=${imageContainers.size}")
+		throw Exception("Không thể tải ảnh. Vui lòng thử lại.")
+	}
 
-		if (imageContainers.isNotEmpty() && actionToken != null) {
-			// Try each container for embedded image data
-			imageContainers.take(3).forEach { container ->
-				val idx = container.attr("data-idx")
-				val innerHtml = container.html().take(300)
-				System.err.println("[LxManga] getPages: container[$idx] html=$innerHtml")
+	/**
+	 * Use the app's WebView to load the chapter page and wait for
+	 * the anti-scraping WASM/JS to decrypt and set image sources.
+	 * Returns list of image URLs, or empty list on failure.
+	 */
+	private suspend fun tryExtractImagesViaWebView(chapterUrl: String): List<String> {
+		return try {
+			val result = context.evaluateJs(chapterUrl, WEBVIEW_EXTRACT_SCRIPT)
+				?: return emptyList()
+
+			val imageUrls = mutableListOf<String>()
+			val jsonArray = JSONArray(result)
+			for (i in 0 until jsonArray.length()) {
+				val url = jsonArray.optString(i, "")
+				if (url.isNotBlank() && url.startsWith("http")) {
+					imageUrls.add(url)
+				}
 			}
+			imageUrls
+		} catch (e: Exception) {
+			System.err.println("[LxManga] WebView error: ${e.message}")
+			emptyList()
 		}
-
-		// Fallback: try direct img tags inside image-container
-		val containerImgPages = doc.select("#image-container img").mapNotNull {
-			val url = it.attr("data-src").ifBlank { null }
-				?: it.attr("src").ifBlank { null }
-				?: return@mapNotNull null
-			if (url.isNotBlank() && !url.contains("favicon") && !url.contains("gif")) {
-				MangaPage(
-					id = generateUid(url),
-					url = url,
-					preview = null,
-					source = source,
-				)
-			} else null
-		}
-		System.err.println("[LxManga] getPages: containerImgPages count=${containerImgPages.size}")
-		if (containerImgPages.isNotEmpty()) {
-			return containerImgPages
-		}
-
-		return emptyList()
 	}
 
 	private fun decodeImageUrl(codes: List<Int>, actionToken: String): String {
@@ -399,16 +369,71 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		private val ACTION_TOKEN_REGEX = Regex("""<meta\s+name=["']action_token["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
 		private val ENCRYPTED_IMAGES_REGEX = Regex("""var\s+_u\s*=\s*(\[\[.*?]]);""", RegexOption.DOT_MATCHES_ALL)
 		private val ENCRYPTED_IMAGE_ROW_REGEX = Regex("""\[(\d+(?:,\d+)*)]""")
-		// Debug: find any var assignment containing arrays of integers
-		private val VAR_ARRAY_REGEX = Regex("""var\s+(\w+)\s*=\s*(\[[\d\s,\[\]]{20,})""")
-		// Debug: find large arrays of numbers (likely encrypted image data)
-		private val LARGE_INT_ARRAY_REGEX = Regex("""\[\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+[^]]{20,}]""")
 
 		@Volatile
 		var lastActionToken: String? = null
 			private set
 
 		private const val PAGE_METADATA_SEPARATOR = "\u00A7\u00A7"
+
+		/**
+		 * JavaScript to inject into WebView after the chapter page loads.
+		 * Waits for the anti-scraping WASM/JS to decrypt and set image sources,
+		 * then collects all image URLs from #image-container img elements.
+		 */
+		private const val WEBVIEW_EXTRACT_SCRIPT = """
+			(function() {
+				return new Promise(function(resolve) {
+					var maxWait = 15000;
+					var checkInterval = 500;
+					var elapsed = 0;
+
+					function tryExtract() {
+						var images = document.querySelectorAll('#image-container img');
+						var urls = [];
+						for (var i = 0; i < images.length; i++) {
+							var src = images[i].getAttribute('src') || images[i].src || '';
+							if (src && src.indexOf('http') === 0 && src.indexOf('favicon') === -1) {
+								urls.push(src);
+							}
+						}
+
+						if (urls.length > 0) {
+							resolve(JSON.stringify(urls));
+							return;
+						}
+
+						elapsed += checkInterval;
+						if (elapsed >= maxWait) {
+							// Final attempt: try data-src, background-image, etc.
+							var containers = document.querySelectorAll('#image-container');
+							for (var i = 0; i < containers.length; i++) {
+								var img = containers[i].querySelector('img');
+								if (img) {
+									var url = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
+									if (!url) {
+										var bg = window.getComputedStyle(containers[i]).backgroundImage;
+										if (bg && bg !== 'none') {
+											url = bg.replace(/^url\(["']?/, '').replace(/["']?\)$/, '');
+										}
+									}
+									if (url && url.indexOf('http') === 0) {
+										urls.push(url);
+									}
+								}
+							}
+							resolve(JSON.stringify(urls));
+							return;
+						}
+
+						setTimeout(tryExtract, checkInterval);
+					}
+
+					// Start checking after initial delay for JS/WASM to initialize
+					setTimeout(tryExtract, 2000);
+				});
+			})()
+		"""
 
 		private fun encodePageMetadata(chapterUrl: String, actionToken: String?, imageUrl: String): String {
 			return "$chapterUrl$PAGE_METADATA_SEPARATOR${actionToken.orEmpty()}$PAGE_METADATA_SEPARATOR$imageUrl"
