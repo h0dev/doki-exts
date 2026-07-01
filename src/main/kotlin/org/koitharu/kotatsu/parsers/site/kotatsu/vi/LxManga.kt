@@ -318,41 +318,30 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	 * Use the app's WebView to load the chapter page and wait for
 	 * the anti-scraping WASM/JS to decrypt and set image sources.
 	 * Returns list of image URLs, or empty list on failure.
-	 *
-	 * Uses a two-step approach:
-	 * 1. Load the page via evaluateJs(chapterUrl, "void(0)") to trigger page load + WASM decryption
-	 * 2. Poll via evaluateJs(POLL_SCRIPT) until images appear or timeout
 	 */
 	private suspend fun tryExtractImagesViaWebView(chapterUrl: String): List<String> {
 		return try {
-			// Step 1: Load the chapter page in WebView — this triggers the anti-scraping WASM
-			context.evaluateJs(chapterUrl, "void(0)")
+			// Load page + collect images in a single evaluateJs call.
+			// The page's anti-scraping WASM runs during page load.
+			val result = context.evaluateJs(chapterUrl, SCRIPT_COLLECT_IMAGES) ?: return emptyList()
 
-			// Step 2: Poll for decrypted images (WASM needs a few seconds)
-			val maxAttempts = 15 // 15 seconds max
-			for (attempt in 1..maxAttempts) {
-			 kotlinx.coroutines.delay(1000) // Wait 1 second between checks
+			// evaluateJs wraps string return values in quotes: "\"[...]\""
+			val cleanResult = result.removeSurrounding("\"")
+			System.err.println("[LxManga] WebView result: ${cleanResult.take(200)}")
 
-			val result = context.evaluateJs(SCRIPT_COLLECT_IMAGES) ?: continue
-
-				if (result.isNotBlank() && result != "[]") {
-					val imageUrls = mutableListOf<String>()
-					val jsonArray = JSONArray(result)
-					for (i in 0 until jsonArray.length()) {
-						val url = jsonArray.optString(i, "")
-						if (url.isNotBlank() && url.startsWith("http")) {
-							imageUrls.add(url)
-						}
-					}
-					if (imageUrls.isNotEmpty()) {
-						System.err.println("[LxManga] WebView: found ${imageUrls.size} images on attempt $attempt")
-						return imageUrls
-					}
-				}
-				System.err.println("[LxManga] WebView: attempt $attempt - no images yet")
+			if (cleanResult.isBlank() || cleanResult == "[]") {
+				return emptyList()
 			}
 
-			emptyList()
+			val imageUrls = mutableListOf<String>()
+			val jsonArray = JSONArray(cleanResult)
+			for (i in 0 until jsonArray.length()) {
+				val url = jsonArray.optString(i, "")
+				if (url.isNotBlank() && url.startsWith("http")) {
+					imageUrls.add(url)
+				}
+			}
+			imageUrls
 		} catch (e: Exception) {
 			System.err.println("[LxManga] WebView error: ${e.message}")
 			emptyList()
@@ -398,7 +387,8 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 		/**
 		 * Synchronous JavaScript to collect image URLs from the page.
-		 * Called repeatedly by tryExtractImagesViaWebView() after page load.
+		 * Runs after evaluateJs loads the chapter page.
+		 * The anti-scraping WASM should have already executed during page load.
 		 * Returns JSON array of image URLs, or "[]" if none found.
 		 */
 		private const val SCRIPT_COLLECT_IMAGES = """
@@ -412,7 +402,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 					}
 				}
 				if (urls.length === 0) {
-					// Fallback: try data-src, background-image
 					var containers = document.querySelectorAll('#image-container');
 					for (var i = 0; i < containers.length; i++) {
 						var img = containers[i].querySelector('img');
