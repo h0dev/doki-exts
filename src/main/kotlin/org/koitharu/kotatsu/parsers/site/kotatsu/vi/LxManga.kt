@@ -321,20 +321,48 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 	 */
 	private suspend fun tryExtractImagesViaWebView(chapterUrl: String): List<String> {
 		return try {
-			// Load page + collect images in a single evaluateJs call.
-			// The page's anti-scraping WASM runs during page load.
-			val result = context.evaluateJs(chapterUrl, SCRIPT_COLLECT_IMAGES) ?: return emptyList()
+			// Step 1: Load the page in WebView — triggers anti-scraping WASM
+			System.err.println("[LxManga] WebView: loading $chapterUrl")
+			val loadResult = context.evaluateJs(chapterUrl, "void(0)")
+			System.err.println("[LxManga] WebView: page loaded, loadResult=${loadResult?.take(50)}")
 
-			// evaluateJs wraps string return values in quotes: "\"[...]\""
-			val cleanResult = result.removeSurrounding("\"")
-			System.err.println("[LxManga] WebView result: ${cleanResult.take(200)}")
+			// Step 2: Diagnostic — check what the page looks like
+			val diagScript = """
+				(function() {
+					var info = {};
+					info.title = document.title || '';
+					info.url = location.href || '';
+					info.htmlLen = document.documentElement.outerHTML.length || 0;
+					info.imgContainers = document.querySelectorAll('#image-container').length;
+					info.allImgs = document.querySelectorAll('img').length;
+					info.dataIdxEls = document.querySelectorAll('[data-idx]').length;
+					info.actionToken = (document.querySelector('meta[name="action_token"]') || {}).content || '';
+					var imgSrcs = [];
+					document.querySelectorAll('#image-container img').forEach(function(img) {
+						imgSrcs.push({
+							id: img.id || '',
+							src: img.getAttribute('src') || '',
+							dataSrc: img.getAttribute('data-src') || '',
+							cls: img.className || ''
+						});
+					});
+					info.imgSrcs = imgSrcs;
+					return JSON.stringify(info);
+				})()
+			""".trimIndent()
+			val diag = context.evaluateJs(diagScript)?.removeSurrounding("\"") ?: "null"
+			System.err.println("[LxManga] WebView DIAG: $diag")
 
-			if (cleanResult.isBlank() || cleanResult == "[]") {
+			// Step 3: Collect images
+			val result = context.evaluateJs(SCRIPT_COLLECT_IMAGES)?.removeSurrounding("\"") ?: return emptyList()
+			System.err.println("[LxManga] WebView: collect result length=${result.length} preview=${result.take(200)}")
+
+			if (result.isBlank() || result == "[]") {
 				return emptyList()
 			}
 
 			val imageUrls = mutableListOf<String>()
-			val jsonArray = JSONArray(cleanResult)
+			val jsonArray = JSONArray(result)
 			for (i in 0 until jsonArray.length()) {
 				val url = jsonArray.optString(i, "")
 				if (url.isNotBlank() && url.startsWith("http")) {
@@ -344,6 +372,7 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			imageUrls
 		} catch (e: Exception) {
 			System.err.println("[LxManga] WebView error: ${e.message}")
+			e.printStackTrace()
 			emptyList()
 		}
 	}
