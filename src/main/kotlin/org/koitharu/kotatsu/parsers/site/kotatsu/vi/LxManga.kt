@@ -1,5 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.vi
 
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Headers
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
@@ -255,12 +256,15 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
 		val fullUrl = chapter.url.toAbsoluteUrl(domain)
+		System.err.println("[LxManga] getPages: url=$fullUrl")
 
-		// Method 1: Try WebView-based image extraction (handles anti-scraping WASM)
-		val webImageUrls = tryExtractImagesViaWebView(fullUrl)
-		if (webImageUrls.isNotEmpty()) {
-			System.err.println("[LxManga] getPages: WebView returned ${webImageUrls.size} images")
-			return webImageUrls.map { imageUrl ->
+		// Method 1: Try WebView (with timeout to prevent hanging)
+		val webResult = withTimeoutOrNull(WEBVIEW_TIMEOUT_MS) {
+			tryExtractImagesViaWebView(fullUrl)
+		}
+		if (webResult != null && webResult.isNotEmpty()) {
+			System.err.println("[LxManga] getPages: WebView returned ${webResult.size} images")
+			return webResult.map { imageUrl ->
 				MangaPage(
 					id = generateUid(imageUrl),
 					url = imageUrl,
@@ -269,15 +273,21 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 				)
 			}
 		}
+		System.err.println("[LxManga] getPages: WebView returned nothing, trying HTTP fallback")
 
-		// Method 2: Fallback to static HTML parsing (old XOR method)
-		System.err.println("[LxManga] getPages: WebView returned empty, trying static HTML")
-		val doc = webClient.httpGet(fullUrl).parseHtml()
+		// Method 2: HTTP fallback — try to get images from static HTML
+		val doc = try {
+			webClient.httpGet(fullUrl).parseHtml()
+		} catch (e: Exception) {
+			System.err.println("[LxManga] getPages: HTTP error: ${e.message}")
+			throw IOException("Không thể tải trang: ${e.message}", e)
+		}
+
 		val html = doc.outerHtml()
-
 		val actionToken = ACTION_TOKEN_REGEX.find(html)?.groupValues?.get(1)
-		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
 
+		// Try old XOR encrypted images
+		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
 		if (actionToken != null && encryptedPayload != null) {
 			val encryptedRows = ENCRYPTED_IMAGE_ROW_REGEX.findAll(encryptedPayload)
 				.map { match ->
@@ -299,11 +309,11 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 				}
 
 			if (imageUrls.isNotEmpty()) {
-				lastActionToken = actionToken
+				System.err.println("[LxManga] getPages: XOR method found ${imageUrls.size} images")
 				return imageUrls.map { imageUrl ->
 					MangaPage(
 						id = generateUid(imageUrl),
-						url = encodePageMetadata(fullUrl, actionToken, imageUrl),
+						url = imageUrl,
 						preview = null,
 						source = source,
 					)
@@ -311,70 +321,43 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			}
 		}
 
-		throw Exception("Không thể tải ảnh. Vui lòng thử lại.")
+		// Try extracting image containers with data-idx (some pages embed images differently)
+		val containerCount = doc.select("#image-container[data-idx]").size
+		System.err.println("[LxManga] getPages: #image-container[data-idx] count=$containerCount, actionToken=${actionToken != null}, encryptedPayload=${encryptedPayload != null}")
+
+		throw IOException("Trang này sử dụng chống scrape nâng cao. Vui lòng thử lại sau.")
 	}
 
 	/**
-	 * Use the app's WebView to load the chapter page and wait for
-	 * the anti-scraping WASM/JS to decrypt and set image sources.
+	 * Load chapter in WebView, let anti-scraping WASM/JS decrypt images,
+	 * then collect the decrypted image URLs.
 	 * Returns list of image URLs, or empty list on failure.
+	 * Caller should wrap this with withTimeout to prevent hanging.
 	 */
 	private suspend fun tryExtractImagesViaWebView(chapterUrl: String): List<String> {
-		return try {
-			// Step 1: Load the page in WebView — triggers anti-scraping WASM
-			System.err.println("[LxManga] WebView: loading $chapterUrl")
-			val loadResult = context.evaluateJs(chapterUrl, "void(0)")
-			System.err.println("[LxManga] WebView: page loaded, loadResult=${loadResult?.take(50)}")
+		// Step 1: Load page in WebView
+		System.err.println("[LxManga] WebView: loading page...")
+		val loadResult = context.evaluateJs(chapterUrl, "void(0)")
+		System.err.println("[LxManga] WebView: page loaded, result=${loadResult?.take(50)}")
 
-			// Step 2: Diagnostic — check what the page looks like
-			val diagScript = """
-				(function() {
-					var info = {};
-					info.title = document.title || '';
-					info.url = location.href || '';
-					info.htmlLen = document.documentElement.outerHTML.length || 0;
-					info.imgContainers = document.querySelectorAll('#image-container').length;
-					info.allImgs = document.querySelectorAll('img').length;
-					info.dataIdxEls = document.querySelectorAll('[data-idx]').length;
-					info.actionToken = (document.querySelector('meta[name="action_token"]') || {}).content || '';
-					var imgSrcs = [];
-					document.querySelectorAll('#image-container img').forEach(function(img) {
-						imgSrcs.push({
-							id: img.id || '',
-							src: img.getAttribute('src') || '',
-							dataSrc: img.getAttribute('data-src') || '',
-							cls: img.className || ''
-						});
-					});
-					info.imgSrcs = imgSrcs;
-					return JSON.stringify(info);
-				})()
-			""".trimIndent()
-			val diag = context.evaluateJs(diagScript)?.removeSurrounding("\"") ?: "null"
-			System.err.println("[LxManga] WebView DIAG: $diag")
+		// Step 2: Collect images
+		val result = context.evaluateJs(SCRIPT_COLLECT_IMAGES)
+		val cleanResult = result?.removeSurrounding("\"")
+		System.err.println("[LxManga] WebView: collect result=${cleanResult?.take(200)}")
 
-			// Step 3: Collect images
-			val result = context.evaluateJs(SCRIPT_COLLECT_IMAGES)?.removeSurrounding("\"") ?: return emptyList()
-			System.err.println("[LxManga] WebView: collect result length=${result.length} preview=${result.take(200)}")
-
-			if (result.isBlank() || result == "[]") {
-				return emptyList()
-			}
-
-			val imageUrls = mutableListOf<String>()
-			val jsonArray = JSONArray(result)
-			for (i in 0 until jsonArray.length()) {
-				val url = jsonArray.optString(i, "")
-				if (url.isNotBlank() && url.startsWith("http")) {
-					imageUrls.add(url)
-				}
-			}
-			imageUrls
-		} catch (e: Exception) {
-			System.err.println("[LxManga] WebView error: ${e.message}")
-			e.printStackTrace()
-			emptyList()
+		if (cleanResult.isNullOrBlank() || cleanResult == "[]") {
+			return emptyList()
 		}
+
+		val imageUrls = mutableListOf<String>()
+		val jsonArray = JSONArray(cleanResult)
+		for (i in 0 until jsonArray.length()) {
+			val url = jsonArray.optString(i, "")
+			if (url.isNotBlank() && url.startsWith("http")) {
+				imageUrls.add(url)
+			}
+		}
+		return imageUrls
 	}
 
 	private fun decodeImageUrl(codes: List<Int>, actionToken: String): String {
@@ -408,18 +391,8 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 		private val ENCRYPTED_IMAGES_REGEX = Regex("""var\s+_u\s*=\s*(\[\[.*?]]);""", RegexOption.DOT_MATCHES_ALL)
 		private val ENCRYPTED_IMAGE_ROW_REGEX = Regex("""\[(\d+(?:,\d+)*)]""")
 
-		@Volatile
-		var lastActionToken: String? = null
-			private set
+		private const val WEBVIEW_TIMEOUT_MS = 20_000L
 
-		private const val PAGE_METADATA_SEPARATOR = "\u00A7\u00A7"
-
-		/**
-		 * Synchronous JavaScript to collect image URLs from the page.
-		 * Runs after evaluateJs loads the chapter page.
-		 * The anti-scraping WASM should have already executed during page load.
-		 * Returns JSON array of image URLs, or "[]" if none found.
-		 */
 		private const val SCRIPT_COLLECT_IMAGES = """
 			(function() {
 				var urls = [];
@@ -451,18 +424,5 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 				return JSON.stringify(urls);
 			})()
 		"""
-
-		private fun encodePageMetadata(chapterUrl: String, actionToken: String?, imageUrl: String): String {
-			return "$chapterUrl$PAGE_METADATA_SEPARATOR${actionToken.orEmpty()}$PAGE_METADATA_SEPARATOR$imageUrl"
-		}
-
-		private fun decodePageMetadata(url: String): Triple<String, String?, String> {
-			val parts = url.split(PAGE_METADATA_SEPARATOR, limit = 3)
-			return when {
-				parts.size == 3 -> Triple(parts[0], parts[1].ifBlank { null }, parts[2])
-				parts.size == 2 -> Triple(parts[0], parts[1].ifBlank { null }, "")
-				else -> Triple(url, null, "")
-			}
-		}
 	}
 }
