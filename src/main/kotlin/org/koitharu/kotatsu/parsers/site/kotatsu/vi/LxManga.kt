@@ -1,10 +1,6 @@
 package org.koitharu.kotatsu.parsers.site.vi
 
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Headers
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import org.koitharu.kotatsu.parsers.MangaLoaderContext
@@ -13,7 +9,7 @@ import org.koitharu.kotatsu.parsers.config.ConfigKey
 import org.koitharu.kotatsu.parsers.core.PagedMangaParser
 import org.koitharu.kotatsu.parsers.model.*
 import org.koitharu.kotatsu.parsers.util.*
-import org.json.JSONArray
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -182,7 +178,6 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 			?.text()
 			?.takeIf { it.isNotBlank() }
 
-		// Chapter parsing
 		val chapterElements = doc.select("ul.overflow-y-auto a[href^=/truyen/]:has(span.timeago)")
 			.ifEmpty { doc.select("a[href^=/truyen/]:has(span.timeago)") }
 			.ifEmpty {
@@ -254,119 +249,17 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	// ======================== Pages ========================
 
-	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
-		val fullUrl = chapter.url.toAbsoluteUrl(domain)
-		System.err.println("[LxManga] getPages: url=$fullUrl")
-
-		// Method 1: Try WebView (with timeout to prevent hanging)
-		val webResult = withTimeoutOrNull(WEBVIEW_TIMEOUT_MS) {
-			tryExtractImagesViaWebView(fullUrl)
-		}
-		if (webResult != null && webResult.isNotEmpty()) {
-			System.err.println("[LxManga] getPages: WebView returned ${webResult.size} images")
-			return webResult.map { imageUrl ->
-				MangaPage(
-					id = generateUid(imageUrl),
-					url = imageUrl,
-					preview = null,
-					source = source,
-				)
-			}
-		}
-		System.err.println("[LxManga] getPages: WebView returned nothing, trying HTTP fallback")
-
-		// Method 2: HTTP fallback — try to get images from static HTML
-		val doc = try {
-			webClient.httpGet(fullUrl).parseHtml()
-		} catch (e: Exception) {
-			System.err.println("[LxManga] getPages: HTTP error: ${e.message}")
-			throw IOException("Không thể tải trang: ${e.message}", e)
-		}
-
-		val html = doc.outerHtml()
-		val actionToken = ACTION_TOKEN_REGEX.find(html)?.groupValues?.get(1)
-
-		// Try old XOR encrypted images
-		val encryptedPayload = ENCRYPTED_IMAGES_REGEX.find(html)?.groupValues?.get(1)
-		if (actionToken != null && encryptedPayload != null) {
-			val encryptedRows = ENCRYPTED_IMAGE_ROW_REGEX.findAll(encryptedPayload)
-				.map { match ->
-					match.groupValues[1]
-						.split(",")
-						.mapNotNull { it.toIntOrNull() }
-						.takeIf { it.isNotEmpty() }
-				}
-				.toList()
-
-			val imageUrls = doc.select("#image-container[data-idx]")
-				.mapNotNull { it.attr("data-idx").toIntOrNull() }
-				.distinct()
-				.sorted()
-				.mapNotNull { idx ->
-					encryptedRows.getOrNull(idx)
-						?.let { codes -> decodeImageUrl(codes, actionToken) }
-						?.takeIf { it.isNotBlank() }
-				}
-
-			if (imageUrls.isNotEmpty()) {
-				System.err.println("[LxManga] getPages: XOR method found ${imageUrls.size} images")
-				return imageUrls.map { imageUrl ->
-					MangaPage(
-						id = generateUid(imageUrl),
-						url = imageUrl,
-						preview = null,
-						source = source,
-					)
-				}
-			}
-		}
-
-		// Try extracting image containers with data-idx (some pages embed images differently)
-		val containerCount = doc.select("#image-container[data-idx]").size
-		System.err.println("[LxManga] getPages: #image-container[data-idx] count=$containerCount, actionToken=${actionToken != null}, encryptedPayload=${encryptedPayload != null}")
-
-		throw IOException("Trang này sử dụng chống scrape nâng cao. Vui lòng thử lại sau.")
-	}
-
 	/**
-	 * Load chapter in WebView, let anti-scraping WASM/JS decrypt images,
-	 * then collect the decrypted image URLs.
-	 * Returns list of image URLs, or empty list on failure.
-	 * Caller should wrap this with withTimeout to prevent hanging.
+	 * LxManga uses Cloudflare Turnstile anti-bot protection.
+	 * Images are encrypted via WASM that only executes in a real browser.
+	 * WebView cannot bypass Turnstile — it requires human interaction.
+	 * List/details still work via HTTP, but chapter pages cannot be loaded.
 	 */
-	private suspend fun tryExtractImagesViaWebView(chapterUrl: String): List<String> {
-		// Step 1: Load page in WebView
-		System.err.println("[LxManga] WebView: loading page...")
-		val loadResult = context.evaluateJs(chapterUrl, "void(0)")
-		System.err.println("[LxManga] WebView: page loaded, result=${loadResult?.take(50)}")
-
-		// Step 2: Collect images
-		val result = context.evaluateJs(SCRIPT_COLLECT_IMAGES)
-		val cleanResult = result?.removeSurrounding("\"")
-		System.err.println("[LxManga] WebView: collect result=${cleanResult?.take(200)}")
-
-		if (cleanResult.isNullOrBlank() || cleanResult == "[]") {
-			return emptyList()
-		}
-
-		val imageUrls = mutableListOf<String>()
-		val jsonArray = JSONArray(cleanResult)
-		for (i in 0 until jsonArray.length()) {
-			val url = jsonArray.optString(i, "")
-			if (url.isNotBlank() && url.startsWith("http")) {
-				imageUrls.add(url)
-			}
-		}
-		return imageUrls
-	}
-
-	private fun decodeImageUrl(codes: List<Int>, actionToken: String): String {
-		val result = StringBuilder(codes.size)
-		codes.forEachIndexed { index, code ->
-			val keyCode = actionToken[index % actionToken.length].code
-			result.append((code xor keyCode).toChar())
-		}
-		return result.toString()
+	override suspend fun getPages(chapter: MangaChapter): List<MangaPage> {
+		throw IOException(
+			"LxManga hiện đang bảo vệ bởi Cloudflare Turnstile. " +
+				"Hình ảnh không thể tải tự động. Vui lòng sử dụng nguồn khác."
+		)
 	}
 
 	// ======================== Tags ========================
@@ -387,42 +280,5 @@ internal class LxManga(context: MangaLoaderContext) : PagedMangaParser(context, 
 
 	companion object {
 		private val BACKGROUND_URL_REGEX = Regex("""background-image:\s*url\(['"]?([^'")]+)""", RegexOption.IGNORE_CASE)
-		private val ACTION_TOKEN_REGEX = Regex("""<meta\s+name=["']action_token["']\s+content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-		private val ENCRYPTED_IMAGES_REGEX = Regex("""var\s+_u\s*=\s*(\[\[.*?]]);""", RegexOption.DOT_MATCHES_ALL)
-		private val ENCRYPTED_IMAGE_ROW_REGEX = Regex("""\[(\d+(?:,\d+)*)]""")
-
-		private const val WEBVIEW_TIMEOUT_MS = 20_000L
-
-		private const val SCRIPT_COLLECT_IMAGES = """
-			(function() {
-				var urls = [];
-				var images = document.querySelectorAll('#image-container img');
-				for (var i = 0; i < images.length; i++) {
-					var src = images[i].getAttribute('src') || '';
-					if (src && src.indexOf('http') === 0 && src.indexOf('favicon') === -1) {
-						urls.push(src);
-					}
-				}
-				if (urls.length === 0) {
-					var containers = document.querySelectorAll('#image-container');
-					for (var i = 0; i < containers.length; i++) {
-						var img = containers[i].querySelector('img');
-						if (img) {
-							var url = img.getAttribute('data-src') || img.getAttribute('data-lazy-src') || '';
-							if (!url) {
-								var bg = window.getComputedStyle(containers[i]).backgroundImage;
-								if (bg && bg !== 'none') {
-									url = bg.replace(/^url\(["']?/, '').replace(/["']?\)$/, '');
-								}
-							}
-							if (url && url.indexOf('http') === 0) {
-								urls.push(url);
-							}
-						}
-					}
-				}
-				return JSON.stringify(urls);
-			})()
-		"""
 	}
 }
