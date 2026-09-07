@@ -1,0 +1,11 @@
+.gradle/
+build/
+.idea/
+*.iml
+*.jar
+.kotlin/
+local.properties
+.hive/
+.hive2/
+
+org/
