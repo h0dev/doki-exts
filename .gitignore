@@ -3,6 +3,7 @@ build/
 .idea/
 *.iml
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 .kotlin/
 local.properties
 .hive/
